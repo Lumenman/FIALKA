@@ -20,13 +20,57 @@ KEYS = ('3K', '5K', '6K')
 LIVE = (30, 26, 10, 30)
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+PASCAL = [EXE]
+PYTHON = [sys.executable, os.path.join(HERE, 'fialka.py')]
+
+
+def run(cmd, args, text):
+    """-> (код возврата, stdout, stderr). Потоки раздельно: отчёт подготовки
+    идёт в stderr и сверяется отдельно от шифртекста."""
+    env = dict(os.environ, PYTHONIOENCODING='utf-8')
+    p = subprocess.run(cmd + args, input=text.encode('utf-8'), env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # rstrip только по переводу строки: пробел на конце может быть знаком
+    return (p.returncode, p.stdout.decode('utf-8', 'replace').rstrip('\r\n'),
+            p.stderr.decode('utf-8', 'replace').strip())
+
+
 def run_pascal(args, text):
-    out = subprocess.run([EXE] + args, input=text.encode('utf-8'),
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    if out.returncode:
-        raise RuntimeError(out.stdout.decode('utf-8', 'replace').strip())
-    # только перевод строки: пробел на конце может быть знаком сообщения
-    return out.stdout.decode('utf-8').rstrip('\r\n')
+    code, out, err = run(PASCAL, args, text)
+    if code:
+        raise RuntimeError(err or out)
+    return out
+
+
+def check_prepare():
+    """Подготовка текста и отказы должны совпадать в обеих реализациях.
+
+    Основной цикл гоняет только чистый алфавит, поэтому ни замены, ни отказы
+    в него не попадают, а разъехаться они могут независимо от механизма.
+    """
+    key = os.path.join(fialka.ROOT, 'keys', 'kt16_08_26.txt')
+    cases = [
+        ('подготовка', ['--prepare'], 'Привет, мир: это ёж - "точно".'),
+        ('регистр молча вверх', [], 'привет мир'),
+        ('Й в открытом тексте', [], 'ЙОД'),
+        ('цифра', ['--prepare'], 'ДОМ 7'),
+        ('знака нет в таблице', ['--prepare'], 'ПРИВЕТ!'),
+        ('подготовка на шифртексте', ['-d', '--prepare'], 'ФСИЮ'),
+    ]
+    bad = 0
+    for name, extra, text in cases:
+        args = ['-e', '--key', key] + extra if '-d' not in extra else ['--key', key] + extra
+        pc, po, pe = run(PASCAL, args, text)
+        yc, yo, ye = run(PYTHON, args, text)
+        if (pc == 0) != (yc == 0):
+            print('РАСХОЖДЕНИЕ (%s): паскаль код %d, оракул код %d' % (name, pc, yc))
+            bad += 1
+        elif pc == 0 and (po, pe) != (yo, ye):
+            print('РАСХОЖДЕНИЕ (%s)\n  паскаль: %s | %s\n  оракул:  %s | %s'
+                  % (name, po, pe, yo, ye))
+            bad += 1
+    return bad
 
 
 def main():
@@ -76,7 +120,8 @@ def main():
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-    print('сверено %d прогонов, расхождений: %d' % (rounds, bad))
+    bad += check_prepare()
+    print('сверено %d прогонов плюс подготовка текста, расхождений: %d' % (rounds, bad))
     return 1 if bad else 0
 
 

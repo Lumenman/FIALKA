@@ -122,6 +122,46 @@ begin
   Result := 0;
 end;
 
+{ Регистра на машине нет: «п» и «П» — одна клавиша, поэтому приводить к
+  прописным можно молча. Арифметика по блоку кириллицы в UTF-8: WideUpperCase
+  на не-Windows без cwstring тихо ограничивается латиницей, а это ровно тот
+  случай, когда тихо неправильно хуже, чем десять строк руками. }
+function UpFold(const S: string): string;
+var
+  I: Integer;
+  Ch: string;
+  B1, B2: Byte;
+begin
+  Result := '';
+  I := 1;
+  while I <= Length(S) do
+  begin
+    Ch := NextChar(S, I);
+    if Length(Ch) = 1 then
+    begin
+      if (Ch[1] >= 'a') and (Ch[1] <= 'z') then Ch[1] := Chr(Ord(Ch[1]) - 32);
+    end
+    else if Length(Ch) = 2 then
+    begin
+      B1 := Byte(Ch[1]);
+      B2 := Byte(Ch[2]);
+      if (B1 = $D0) and (B2 >= $B0) and (B2 <= $BF) then          { а..п }
+        Ch[2] := Chr(B2 - $20)
+      else if (B1 = $D1) and (B2 >= $80) and (B2 <= $8F) then     { р..я }
+      begin
+        Ch[1] := Chr($D0);
+        Ch[2] := Chr(B2 + $20);
+      end
+      else if (B1 = $D1) and (B2 = $91) then                      { ё }
+      begin
+        Ch[1] := Chr($D0);
+        Ch[2] := Chr($81);
+      end;
+    end;
+    Result := Result + Ch;
+  end;
+end;
+
 function ReadAll(const Path: string): string;
 var
   F: TFileStream;
@@ -245,6 +285,72 @@ begin
     end;
   finally
     Ini.Free;
+  end;
+end;
+
+{ ---- подготовка текста --------------------------------------------------- }
+
+var
+  PrepFrom, PrepTo: array of string;
+
+procedure LoadPrepare(const Path: string);
+var
+  Ini: TIniFile;
+  L: TStringList;
+  I, P: Integer;
+begin
+  if not FileExists(Path) then Die('нет таблицы подготовки: %s', [Path]);
+  Ini := TIniFile.Create(Path);
+  L := TStringList.Create;
+  try
+    Ini.ReadSectionValues('replace', L);
+    SetLength(PrepFrom, L.Count);
+    SetLength(PrepTo, L.Count);
+    for I := 0 to L.Count - 1 do
+    begin
+      P := Pos('=', L[I]);
+      PrepFrom[I] := UpFold(Trim(Copy(L[I], 1, P - 1)));
+      PrepTo[I] := UpFold(Trim(Copy(L[I], P + 1, MaxInt)));
+    end;
+  finally
+    L.Free;
+    Ini.Free;
+  end;
+end;
+
+{ Замены документируются построчно: молча менять сообщение нельзя — получатель
+  расшифрует не то, что отправляли, и ничто на это не укажет. }
+function PrepareText(const S: string): string;
+var
+  I, J, Num: Integer;
+  Ch: string;
+  Hit: Boolean;
+begin
+  Result := '';
+  I := 1;
+  Num := 0;
+  while I <= Length(S) do
+  begin
+    Ch := NextChar(S, I);
+    if (Ch <> #13) and (Ch <> #10) then Inc(Num);
+    Hit := False;
+    for J := 0 to High(PrepFrom) do
+      if PrepFrom[J] = Ch then
+      begin
+        WriteLn(StdErr, Format('подготовка: знак %d  %s -> %s', [Num, Ch, PrepTo[J]]));
+        Result := Result + PrepTo[J];
+        Hit := True;
+        Break;
+      end;
+    if not Hit then
+    begin
+      { проверяем по исходному тексту: после замен номера знаков уже съедут,
+        и указывать на место в файле стало бы нечем }
+      if (Ch <> ' ') and (Ch <> #13) and (Ch <> #10) and (ContactOf(Ch) = 0) then
+        Die('знак %d (%s): такого знака нет ни на машине, ни в таблице подготовки',
+            [Num, Ch]);
+      Result := Result + Ch;
+    end;
   end;
 end;
 
@@ -591,18 +697,26 @@ begin
 end;
 
 { Пробел делит контакт с последней буквой алфавита (Й). }
-function IndexOfChar(const Ch: string): Integer;
+function IndexOfChar(const Ch: string; Num: Integer): Integer;
 begin
   if (Ch = ' ') and (Mode <> mDecoding) then Result := SpaceContact
   else
   begin
     Result := ContactOf(Ch);
-    if Result = 0 then Die('знака нет в алфавите: %s', [Ch]);
+    if Result = 0 then
+      Die('знак %d (%s): такого знака на машине нет, готовьте текст ключом --prepare',
+          [Num, Ch]);
+    { Й делит контакт с пробелом, поэтому в открытом тексте её набрать нельзя:
+      она молча ушла бы в пробел. В шифртексте контакт 30 печатается как Й,
+      так что при расшифровании она законна. }
+    if (Result = SpaceContact) and (Mode <> mDecoding) then
+      Die('знак %d (%s): её клавиша занята пробелом, замените на И (мануал 4.5) '
+          + 'или примените --prepare', [Num, Ch]);
   end;
   { при 26 и 10 живых контактах часть клавиш отключена }
   if Keyboard[Result] = 0 then
-    Die('знак %s не набирается: при %d живых контактах его клавиша отключена',
-        [Ch, Live]);
+    Die('знак %d (%s): при %d живых контактах его клавиша отключена',
+        [Num, Ch, Live]);
 end;
 
 function LetterOf(C: Integer): string;
@@ -624,7 +738,7 @@ begin
     Ch := NextChar(Text, I);
     if (Ch = #13) or (Ch = #10) then Continue;
     Inc(Num);
-    CIn := IndexOfChar(Ch);
+    CIn := IndexOfChar(Ch, Num);
     if Logging then
     begin
       WriteLn(LogF);
@@ -824,6 +938,7 @@ begin
   WriteLn('  -w, --wheels    перебить комплект, заданный в ключе');
   WriteLn('  -o ФАЙЛ         выходной файл (иначе stdout)');
   WriteLn('  --log ФАЙЛ      подробная трасса: позиции, щупы, круги, шаг');
+  WriteLn('  --prepare       подготовить текст по data/prepare.ini, с отчётом');
   WriteLn;
   WriteLn('  --genkey        случайный ключ дня (комплект задаётся --set)');
   WriteLn('  --genpos        случайный ключ сообщения');
@@ -840,6 +955,7 @@ var
   GenKey: Boolean = False;
   GenPos: Boolean = False;
   HasSeed: Boolean = False;
+  Preparing: Boolean = False;
   OutFile: TextFile;
 
 procedure Emit(const S: string);
@@ -883,6 +999,7 @@ begin
     else if A = '-o' then OutPath := NextArg(I)
     else if A = '--log' then LogPath := NextArg(I)
     else if A = '--selftest' then SelfTest := True
+    else if A = '--prepare' then Preparing := True
     else if A = '--genkey' then GenKey := True
     else if A = '--genpos' then GenPos := True
     else if A = '--set' then SetArg := NextArg(I)
@@ -944,6 +1061,9 @@ begin
   Live := 30;
 
   ParseArgs;
+  { На шифртексте подготовка подменила бы Й и испортила его. }
+  if Preparing and (Mode = mDecoding) then
+    Die('--prepare применяется только к открытому тексту', []);
   LoadMachine(MachinePath, Live);
 
   if SelfTest then
@@ -1013,6 +1133,12 @@ begin
   end;
   { Trim здесь недопустим: пробел — знак машины, а не отступ.
     Переводы строк Process пропускает сам. }
+  Text := UpFold(Text);
+  if Preparing then
+  begin
+    LoadPrepare(Near('data' + DirectorySeparator + 'prepare.ini'));
+    Text := PrepareText(Text);
+  end;
   Res := Process(Text);
 
   if Logging then CloseFile(LogF);

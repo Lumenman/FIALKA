@@ -87,11 +87,20 @@ class Tables:
             self.wiring_inv.append(invert(wiring))
             self.pins.append(pins)
 
-    def index(self, ch, decoding):
+    def index(self, ch, decoding, num=0):
         """Знак -> номер контакта. Пробел делит контакт с последней буквой."""
         if ch == ' ' and not decoding:
             return self.space_contact
-        return self.alphabet.index(ch) + 1
+        if ch not in self.alphabet:
+            raise ValueError('знак %d (%s): такого знака на машине нет, '
+                             'готовьте текст ключом --prepare' % (num, ch))
+        contact = self.alphabet.index(ch) + 1
+        # Й делит контакт с пробелом и в открытом тексте молча ушла бы в пробел;
+        # в шифртексте контакт 30 печатается как Й, там она законна
+        if contact == self.space_contact and not decoding:
+            raise ValueError('знак %d (%s): её клавиша занята пробелом, замените '
+                             'на И (мануал 4.5) или примените --prepare' % (num, ch))
+        return contact
 
     def letter(self, contact, decoding):
         """Номер контакта -> знак. В расшифровании контакт пробела печатается пробелом."""
@@ -185,6 +194,40 @@ class Key:
         for name in ('ring', 'core_offset', 'position'):
             if not all(1 <= v <= N for v in getattr(self, name)[1:]):
                 raise ValueError('%s: значение вне 1..%d' % (name, N))
+
+
+PREPARE = os.path.join(ROOT, 'data', 'prepare.ini')
+
+
+def prepare(text, tables, path=PREPARE, report=None):
+    """Подготовка текста: то, что оператор делал до машины.
+
+    Регистр приводится к прописным всегда и до таблицы. Замены документируются:
+    молча менять сообщение нельзя — получатель расшифрует не то, что отправляли.
+    Проверка идёт по исходному тексту, потому что после замен номера знаков
+    съезжают и указать на место в файле стало бы нечем.
+    """
+    # delimiters: у FPC разделитель только '=', и двоеточие обязано быть
+    # обычным ключом. optionxform: иначе ключи-буквы уедут в нижний регистр.
+    cfg = configparser.ConfigParser(delimiters=('=',))
+    cfg.optionxform = str
+    if not cfg.read(path, encoding='utf-8'):
+        raise ValueError('нет таблицы подготовки: %s' % path)
+    table = {k.upper(): v.upper() for k, v in cfg['replace'].items()}
+    out, num = [], 0
+    for ch in text.upper():
+        if ch not in '\r\n':
+            num += 1
+        if ch in table:
+            if report:
+                report('подготовка: знак %d  %s -> %s' % (num, ch, table[ch]))
+            out.append(table[ch])
+        else:
+            if ch not in tables.alphabet and ch not in ' \r\n':
+                raise ValueError('знак %d (%s): такого знака нет ни на машине, '
+                                 'ни в таблице подготовки' % (num, ch))
+            out.append(ch)
+    return ''.join(out)
 
 
 def load(machine_path, key_path, wheels_path=None, **kw):
@@ -298,11 +341,12 @@ class Machine:
 
     def process(self, text):
         decoding = self.k.mode == 'decoding'
-        out = []
+        out, num = [], 0
         for ch in text:
             if ch in '\r\n':
                 continue
-            c = self.contact(self.t.index(ch, decoding))
+            num += 1
+            c = self.contact(self.t.index(ch, decoding, num))
             out.append(self.t.letter(c, decoding))
             self.step()
         return ''.join(out)
@@ -453,6 +497,8 @@ def main():
     mode.add_argument('-p', dest='mode', action='store_const', const='plain',
                       help='сквозной прогон, для проверки')
     ap.set_defaults(mode='coding')
+    ap.add_argument('--prepare', action='store_true',
+                    help='подготовить текст по data/prepare.ini, с отчётом')
     ap.add_argument('--in', dest='src', help='входной файл (иначе stdin)')
     ap.add_argument('--selftest', action='store_true', help='структурные проверки')
     ap.add_argument('--genkey', action='store_true', help='случайный ключ дня')
@@ -484,10 +530,16 @@ def main():
 
     if not args.key:
         ap.error('нужен --key, --genkey, --genpos или --selftest')
+    if args.prepare and args.mode == 'decoding':
+        # на шифртексте подготовка подменила бы Й и испортила его
+        ap.error('--prepare применяется только к открытому тексту')
     tables, key = load(args.machine, args.key, args.wheels,
                        mode=args.mode, live=args.live, position=args.pos)
     text = open(args.src, encoding='utf-8').read() if args.src else sys.stdin.read()
     # без .strip(): пробел — знак машины, переводы строк process пропускает сам
+    text = text.upper()          # регистра на машине нет: «п» и «П» — одна клавиша
+    if args.prepare:
+        text = prepare(text, tables, report=lambda s: print(s, file=sys.stderr))
     sys.stdout.write(Machine(tables, key).process(text) + '\n')
     return 0
 
