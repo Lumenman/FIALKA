@@ -641,28 +641,91 @@ end;
 
 { ---- самопроверки ------------------------------------------------------- }
 
-procedure RandomKey;
+procedure RandomPerm(out R: TRow);
 var
   I, J, T: Integer;
 begin
-  for I := 1 to SLOTS do
-  begin
-    WheelOrder[I] := I;
-    CoreOrder[I] := I;
-    CoreSide[I] := 1 + Random(2);
-    Ring[I] := 1 + Random(N);
-    CoreOffset[I] := 1 + Random(N);
-    Position[I] := 1 + Random(N);
-  end;
+  for I := 1 to SLOTS do R[I] := I;
   for I := SLOTS downto 2 do                 { тасовка Фишера — Йетса }
   begin
     J := 1 + Random(I);
-    T := WheelOrder[I]; WheelOrder[I] := WheelOrder[J]; WheelOrder[J] := T;
-    J := 1 + Random(I);
-    T := CoreOrder[I]; CoreOrder[I] := CoreOrder[J]; CoreOrder[J] := T;
+    T := R[I]; R[I] := R[J]; R[J] := T;
   end;
+end;
+
+procedure RandomRow(out R: TRow; Hi: Integer);
+var
+  I: Integer;
+begin
+  for I := 1 to SLOTS do R[I] := 1 + Random(Hi);
+end;
+
+procedure RandomKey;
+begin
+  RandomPerm(WheelOrder);
+  RandomPerm(CoreOrder);
+  RandomRow(CoreSide, 2);
+  RandomRow(Ring, N);
+  RandomRow(CoreOffset, N);
+  RandomRow(Position, N);
   Card := CardBuiltin;
   Invert(Card, CardInv);
+end;
+
+{ Ряд карты: две группы по пять, как в книгах ключей. }
+function FmtRow(const R: TRow; AsLetters: Boolean): string;
+var
+  I: Integer;
+  Left, Right, V: string;
+begin
+  Left := '';
+  Right := '';
+  for I := 1 to SLOTS do
+  begin
+    if AsLetters then V := Alphabet[R[I]] else V := IntToStr(R[I]);
+    if I <= 5 then
+    begin
+      if I > 1 then Left := Left + ' ';
+      Left := Left + V;
+    end
+    else
+    begin
+      if I > 6 then Right := Right + ' ';
+      Right := Right + V;
+    end;
+  end;
+  Result := Format('%-9s   %s', [Left, Right]);
+end;
+
+{ Ключ сообщения: начальная установка десяти дисков (мануал, гл. 2.11.2). }
+function MakePositions: string;
+var
+  R: TRow;
+begin
+  RandomRow(R, N);
+  Result := FmtRow(R, True);
+end;
+
+{ Случайный ключ дня. Прорези на карте нет: она приходит из книги ключей
+  сообщения, а не с карты. }
+function MakeCard(const SetId: string): string;
+var
+  R: TRow;
+
+  function Line(const Comment: string; AsLetters: Boolean): string;
+  begin
+    Result := FmtRow(R, AsLetters) + '   ; ' + Comment + LineEnding;
+  end;
+
+begin
+  Result := '; ключ дня, комплект ' + SetId + LineEnding +
+            'set  = ' + SetId + LineEnding +
+            'card = identity' + LineEnding + LineEnding;
+  RandomPerm(R);    Result := Result + Line('1 обода по слотам', True);
+  RandomRow(R, N);  Result := Result + Line('2 кольца', True);
+  RandomPerm(R);    Result := Result + Line('3 сердечники по слотам', True);
+  RandomRow(R, 2);  Result := Result + Line('4 сторона сердечника', False);
+  RandomRow(R, N);  Result := Result + Line('5 смещение сердечника', True);
 end;
 
 { 1. В режиме plain рефлектор тождественный, значит F = A^-1 * I * A = I:
@@ -751,7 +814,7 @@ begin
   WriteLn('Фиалка М-125');
   WriteLn;
   WriteLn('  fialka [-e|-d|-p] -k ключ.txt [ключи] [вход.txt]');
-  WriteLn('  fialka --selftest');
+  WriteLn('  fialka --genkey | --genpos | --selftest');
   WriteLn;
   WriteLn('  -e, -d, -p      зашифрование (по умолчанию), расшифрование, сквозной прогон');
   WriteLn('  -k, --key ФАЙЛ  ключ дня в формате перфокарты');
@@ -761,14 +824,36 @@ begin
   WriteLn('  -w, --wheels    перебить комплект, заданный в ключе');
   WriteLn('  -o ФАЙЛ         выходной файл (иначе stdout)');
   WriteLn('  --log ФАЙЛ      подробная трасса: позиции, щупы, круги, шаг');
+  WriteLn;
+  WriteLn('  --genkey        случайный ключ дня (комплект задаётся --set)');
+  WriteLn('  --genpos        случайный ключ сообщения');
+  WriteLn('  --set ID        комплект дисков для --genkey (по умолчанию 6K)');
+  WriteLn('  --seed N        зерно ГПСЧ, для воспроизводимости');
   Halt(0);
 end;
 
 var
   MachinePath, WheelsPath, KeyPath, PosArg, OutPath, InPath, LogPath,
-    Text, Res, Err: string;
-  Argc: Integer;
+    Text, Res, Err, SetArg: string;
+  Argc, Seed: Integer;
   SelfTest: Boolean = False;
+  GenKey: Boolean = False;
+  GenPos: Boolean = False;
+  HasSeed: Boolean = False;
+  OutFile: TextFile;
+
+procedure Emit(const S: string);
+begin
+  if OutPath = '' then WriteLn(S)
+  else
+  begin
+    AssignFile(OutFile, OutPath);
+    Rewrite(OutFile);
+    SetTextCodePage(OutFile, DefaultSystemCodePage);
+    WriteLn(OutFile, S);
+    CloseFile(OutFile);
+  end;
+end;
 
 function NextArg(var I: Integer): string;
 begin
@@ -798,6 +883,14 @@ begin
     else if A = '-o' then OutPath := NextArg(I)
     else if A = '--log' then LogPath := NextArg(I)
     else if A = '--selftest' then SelfTest := True
+    else if A = '--genkey' then GenKey := True
+    else if A = '--genpos' then GenPos := True
+    else if A = '--set' then SetArg := NextArg(I)
+    else if A = '--seed' then
+    begin
+      Seed := StrToInt(NextArg(I));
+      HasSeed := True;
+    end
     else if (A = '-h') or (A = '--help') then Usage
     else if (Length(A) > 0) and (A[1] = '-') then Die('неизвестный ключ: %s', [A])
     else InPath := A;
@@ -828,7 +921,6 @@ begin
 end;
 
 var
-  OutFile: TextFile;
   Line: string;
 begin
   { Всё в UTF-8, включая консоль. Строки внутри программы — сырые байты UTF-8,
@@ -848,6 +940,7 @@ begin
   OutPath := '';
   InPath := '';
   LogPath := '';
+  SetArg := '6K';
   Live := 30;
 
   ParseArgs;
@@ -856,6 +949,22 @@ begin
   if SelfTest then
   begin
     RunSelfTest;
+    Halt(0);
+  end;
+
+  if GenKey or GenPos then
+  begin
+    { ponytail: Random в FPC — не криптографический ГПСЧ. Для реконструкции
+      музейной машины годится; для боевого ключа менять источник, не формат. }
+    if HasSeed then RandSeed := Seed else Randomize;
+    if GenPos then Emit(MakePositions)
+    else
+    begin
+      if WheelsPath = '' then
+        WheelsPath := ExtractFilePath(MachinePath) + Format('wheels-%s.ini', [SetArg]);
+      LoadWheels(WheelsPath);            { заодно проверка, что комплект есть }
+      Emit(MakeCard(WheelSet));
+    end;
     Halt(0);
   end;
 
@@ -907,14 +1016,5 @@ begin
   Res := Process(Text);
 
   if Logging then CloseFile(LogF);
-
-  if OutPath = '' then WriteLn(Res)
-  else
-  begin
-    AssignFile(OutFile, OutPath);
-    Rewrite(OutFile);
-    SetTextCodePage(OutFile, DefaultSystemCodePage);
-    WriteLn(OutFile, Res);
-    CloseFile(OutFile);
-  end;
+  Emit(Res);
 end.

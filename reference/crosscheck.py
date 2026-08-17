@@ -45,9 +45,17 @@ def main():
             live = LIVE[i % len(LIVE)]
             tables = fialka.Tables(fialka.MACHINE,
                                    os.path.join(fialka.ROOT, 'data', 'wheels-%s.ini' % wheel_set))
+            # ключи генерируются то одной реализацией, то другой: так каждый
+            # разбор читает чужой вывод, а не только свой собственный
+            if (i // 2) % 2:      # не i % 2: иначе генератор был бы намертво
+                                  # связан с режимом и половина сочетаний выпала
+                card = run_pascal(['--genkey', '--set', wheel_set, '--seed', str(i)], '')
+                pos = run_pascal(['--genpos', '--seed', str(i)], '')
+            else:
+                card = fialka.gen_card(tables, wheel_set)
+                pos = fialka.gen_positions(tables.alphabet)
             with open(tmp, 'w', encoding='utf-8') as f:
-                f.write(fialka.gen_card(tables, wheel_set))
-            pos = fialka.gen_positions(tables.alphabet)
+                f.write(card + '\n')
 
             # набрать можно только то, чья клавиша подключена при этом live
             kb = tables.keyboard[live]
