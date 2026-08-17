@@ -894,8 +894,9 @@ begin
   Result := '';
 end;
 
-{ 3. Единственная проверка, которая говорит «механизм совпал с оригиналом»:
-     demo снято с M125v5_16eng.exe, а не построено этой программой. }
+{ 3. Регрессионный вектор: шифртекст в demo/en.txt построен этой реализацией,
+     поэтому проверка стережёт неизменность поведения, но не доказывает
+     совпадение с оригиналом. См. demo/note.txt. }
 function TestDemo(const MachinePath, KeyPath, PlainPath, CipherPath: string): string;
 var
   Plain, Expect, Got: string;
@@ -1031,7 +1032,7 @@ begin
   Err := TestDemo(MachinePath, Near('keys' + DirectorySeparator + 'kt16_08_26.txt'),
                   Near('demo' + DirectorySeparator + 'de.txt'),
                   Near('demo' + DirectorySeparator + 'en.txt'));
-  if Err = '' then WriteLn('сверка с demo/: OK — 24/24')
+  if Err = '' then WriteLn('сверка с demo/: OK — знак в знак')
   else WriteLn('сверка с demo/: ', Err);
 
   if (Bad <> '') or ((Err <> '') and (Pos('пропущена', Err) = 0)) then Halt(1);

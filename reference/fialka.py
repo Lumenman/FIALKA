@@ -457,10 +457,11 @@ def selftest(tables, rounds=200):
 
 
 def verify_demo():
-    """Сверка с эталоном: demo/de.txt -> demo/en.txt на ключе 16.08.26, комплект 6K.
+    """Сверка с demo/: de.txt -> en.txt на ключе 16.08.26, комплект 6K.
 
-    Единственная проверка, которая говорит «механизм совпал с оригиналом»:
-    demo снят с M125v5_16eng.exe, а не построен этой моделью.
+    Регрессионный вектор: шифртекст в demo/en.txt построен этой реализацией,
+    поэтому проверка стережёт неизменность поведения, но не доказывает
+    совпадение с оригиналом. См. demo/note.txt.
     """
     paths = {
         'machine': MACHINE,
@@ -525,7 +526,7 @@ def main():
         structural = selftest(tables)
         print('структурные проверки:', 'ПРОВАЛ — ' + structural if structural else 'OK')
         demo = verify_demo()
-        print('сверка с demo/:', demo if demo else 'OK — 24/24')
+        print('сверка с demo/:', demo if demo else 'OK — знак в знак')
         return 1 if (structural or (demo and 'пропущена' not in demo)) else 0
 
     if not args.key:

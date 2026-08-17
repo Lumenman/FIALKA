@@ -23,6 +23,7 @@ GHIDRA=/d/Downloads/ghidra_12.1.2_PUBLIC_20260605
     -scriptPath reference/tools -postScript DumpFuncs.java out.c 0x469f74 0x469bf4
 ```
 
-Ключевые адреса — в документе по механизму, раздел «Карта адресов».
+Ключевые адреса — в [docs/mechanism.md](../../docs/mechanism.md), раздел
+«Карта адресов».
 Функции 0x4694a0, 0x46952c, 0x469568 и 0x4696f4 приходится дизассемблировать
 принудительно; их входные точки находятся по `call rel32` из 0x469f3c…0x469f58.
