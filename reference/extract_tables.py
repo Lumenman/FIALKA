@@ -110,7 +110,7 @@ def main():
     exe = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, os.pardir, 'deco',
                                                              'M125v5_16eng.exe')
     blob = load(exe)
-    data = os.path.join(here, 'data')
+    data = os.path.join(here, os.pardir, 'data')
     write_machine(blob, os.path.join(data, 'machine-M125-3.ini'))
     for name in WHEEL_SETS:
         write_wheels(blob, name, os.path.join(data, 'wheels-%s.ini' % name))

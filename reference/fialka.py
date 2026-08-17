@@ -18,7 +18,8 @@ import random
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MACHINE = os.path.join(HERE, 'data', 'machine-M125-3.ini')
+ROOT = os.path.dirname(HERE)          # data/ и keys/ общие с реализацией на Паскале
+MACHINE = os.path.join(ROOT, 'data', 'machine-M125-3.ini')
 N = 30                      # контактов на диске
 SLOTS = 10                  # дисков в барабане
 
@@ -414,12 +415,11 @@ def verify_demo():
     Единственная проверка, которая говорит «механизм совпал с оригиналом»:
     demo снят с M125v5_16eng.exe, а не построен этой моделью.
     """
-    root = os.path.join(HERE, os.pardir)
     paths = {
         'machine': MACHINE,
-        'key': os.path.join(HERE, 'keys', 'kt16_08_26.txt'),
-        'plain': os.path.join(root, 'demo', 'de.txt'),
-        'cipher': os.path.join(root, 'demo', 'en.txt'),
+        'key': os.path.join(ROOT, 'keys', 'kt16_08_26.txt'),
+        'plain': os.path.join(ROOT, 'demo', 'de.txt'),
+        'cipher': os.path.join(ROOT, 'demo', 'en.txt'),
     }
     missing = [n for n, p in paths.items() if not os.path.exists(p)]
     if missing:
@@ -484,7 +484,8 @@ def main():
     tables, key = load(args.machine, args.key, args.wheels,
                        mode=args.mode, live=args.live, position=args.pos)
     text = open(args.src, encoding='utf-8').read() if args.src else sys.stdin.read()
-    sys.stdout.write(Machine(tables, key).process(text.strip()) + '\n')
+    # без .strip(): пробел — знак машины, переводы строк process пропускает сам
+    sys.stdout.write(Machine(tables, key).process(text) + '\n')
     return 0
 
 
