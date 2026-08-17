@@ -273,6 +273,9 @@ class Machine:
     # ---- один знак ---------------------------------------------------------
     def contact(self, contact_in):
         i = self.kb[contact_in]
+        if not i:      # при live 26 и 10 часть клавиш отключена
+            raise ValueError('контакт %d не набирается при %d живых контактах'
+                             % (contact_in, self.k.live))
         for _ in range(N):                       # возвратный контур на входе
             u = self.t.entry[self.card[i]]
             for slot in range(SLOTS, 0, -1):

@@ -34,6 +34,7 @@ var
   { «Железо»: машина плюс комплект дисков. }
   Alphabet: array[TContact] of string;  { UTF-8, по знаку в элементе }
   SpaceContact, ProbeEven, ProbeOdd: Integer;
+  Live: Integer = 30;                   { тумблер Б/С/Ц: живых контактов }
   Entry, EntryInv, CardBuiltin: TWire;
   Keyboard, KeyboardInv: TWire;
   Refl, ReentryIn, ReentryOut: TWire;
@@ -452,6 +453,33 @@ begin
   Result := P in Pins[WheelOrder[Slot]];
 end;
 
+{ ---- трасса ------------------------------------------------------------- }
+
+var
+  Logging: Boolean = False;
+  LogF: TextFile;
+
+function PosLine: string;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 1 to SLOTS do Result := Result + Format('%3d', [WPos[I]]);
+end;
+
+{ Крайние слоты щупом не опрашиваются: цепочки идут 9-7-5-3-1 и 2-4-6-8-10,
+  а блокировку даёт штифт предыдущего диска цепочки. }
+function PinLine: string;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 1 to SLOTS do
+    if (I = 1) or (I = SLOTS) then Result := Result + '-'
+    else if PinUnder(I) then Result := Result + '#'
+    else Result := Result + '.';
+end;
+
 { один такт шагового механизма: две встречные цепочки с накопительной
   штифтовой блокировкой, ведущие слоты 9 и 2 }
 procedure Step;
@@ -462,6 +490,7 @@ var
   Fwd, Bwd: array[1..5] of Integer;
   NF, NB, I, S: Integer;
   Blocked: Boolean;
+  SF, SB: string;
 begin
   NF := 1; Fwd[1] := 9;
   Blocked := False;
@@ -481,16 +510,24 @@ begin
     if not Blocked then begin Inc(NB); Bwd[NB] := S; end;
   end;
 
+  SF := '';
   for I := 1 to NF do
   begin
     S := Fwd[I];
+    if I > 1 then SF := SF + ',';
+    SF := SF + IntToStr(S);
     if WPos[S] >= N then WPos[S] := 1 else Inc(WPos[S]);
   end;
+  SB := '';
   for I := 1 to NB do
   begin
     S := Bwd[I];
+    if I > 1 then SB := SB + ',';
+    SB := SB + IntToStr(S);
     if WPos[S] <= 1 then WPos[S] := N else Dec(WPos[S]);
   end;
+  if Logging then
+    WriteLn(LogF, Format('  шаг    вперёд %-9s назад %-11s поз%s', [SF, SB, PosLine]));
 end;
 
 { один знак: контакт на входе -> контакт на выходе }
@@ -498,29 +535,55 @@ function Contact(CIn: Integer): Integer;
 var
   I, U, T, Slot, Round: Integer;
   Found: Boolean;
+  S: string;
 begin
   I := Keyboard[CIn];
+  if Logging then WriteLn(LogF, Format('  kb     %d>%d', [CIn, I]));
   Found := False;
   for Round := 1 to N do                     { возвратный контур на входе }
   begin
+    if Logging then
+      S := Format('  круг %d вниз   card %d>%d  entry %d>%d  диски',
+                  [Round, I, Card[I], Card[I], Entry[Card[I]]]);
     U := Entry[Card[I]];
-    for Slot := SLOTS downto 1 do U := Hop(Slot, U, False);
+    for Slot := SLOTS downto 1 do
+    begin
+      U := Hop(Slot, U, False);
+      if Logging then S := S + Format(' %d:%d', [Slot, U]);
+    end;
     if Refl[U] <> 0 then
     begin
+      if Logging then WriteLn(LogF, S, Format('  refl %d>%d', [U, Refl[U]]));
       I := Refl[U];
       Found := True;
       Break;
     end;
+    if Logging then
+      WriteLn(LogF, S, Format('  refl %d мёртвый, возврат %d', [U, ReentryIn[U]]));
     I := ReentryIn[U];
   end;
   if not Found then Die('вход: сигнал не вышел из контура', []);
 
   for Round := 1 to N do                     { возвратный контур на выходе }
   begin
+    if Logging then S := Format('  круг %d вверх  рефлектор >%d  диски', [Round, I]);
     U := I;
-    for Slot := 1 to SLOTS do U := Hop(Slot, U, True);
+    for Slot := 1 to SLOTS do
+    begin
+      U := Hop(Slot, U, True);
+      if Logging then S := S + Format(' %d:%d', [Slot, U]);
+    end;
     T := CardInv[EntryInv[U]];
-    if KeyboardInv[T] <> 0 then Exit(KeyboardInv[T]);
+    if KeyboardInv[T] <> 0 then
+    begin
+      if Logging then
+        WriteLn(LogF, S, Format('  entry'' %d>%d  card'' %d>%d  kb'' %d>%d',
+                [U, EntryInv[U], EntryInv[U], T, T, KeyboardInv[T]]));
+      Exit(KeyboardInv[T]);
+    end;
+    if Logging then
+      WriteLn(LogF, S, Format('  entry'' %d>%d  card'' %d>%d  контакт мёртвый, возврат %d',
+              [U, EntryInv[U], EntryInv[U], T, ReentryOut[T]]));
     I := ReentryOut[T];
   end;
   Die('выход: сигнал не вышел из контура', []);
@@ -530,9 +593,16 @@ end;
 { Пробел делит контакт с последней буквой алфавита (Й). }
 function IndexOfChar(const Ch: string): Integer;
 begin
-  if (Ch = ' ') and (Mode <> mDecoding) then Exit(SpaceContact);
-  Result := ContactOf(Ch);
-  if Result = 0 then Die('знака нет в алфавите: %s', [Ch]);
+  if (Ch = ' ') and (Mode <> mDecoding) then Result := SpaceContact
+  else
+  begin
+    Result := ContactOf(Ch);
+    if Result = 0 then Die('знака нет в алфавите: %s', [Ch]);
+  end;
+  { при 26 и 10 живых контактах часть клавиш отключена }
+  if Keyboard[Result] = 0 then
+    Die('знак %s не набирается: при %d живых контактах его клавиша отключена',
+        [Ch, Live]);
 end;
 
 function LetterOf(C: Integer): string;
@@ -543,16 +613,28 @@ end;
 
 function Process(const Text: string): string;
 var
-  I: Integer;
+  I, Num, CIn, COut: Integer;
   Ch: string;
 begin
   Result := '';
   I := 1;
+  Num := 0;
   while I <= Length(Text) do
   begin
     Ch := NextChar(Text, I);
     if (Ch = #13) or (Ch = #10) then Continue;
-    Result := Result + LetterOf(Contact(IndexOfChar(Ch)));
+    Inc(Num);
+    CIn := IndexOfChar(Ch);
+    if Logging then
+    begin
+      WriteLn(LogF);
+      WriteLn(LogF, Format('--- знак %d: %s = контакт %d', [Num, Ch, CIn]));
+      WriteLn(LogF, Format('  поз   %s   щупы %s', [PosLine, PinLine]));
+    end;
+    COut := Contact(CIn);
+    Result := Result + LetterOf(COut);
+    if Logging then
+      WriteLn(LogF, Format('  =      контакт %d = %s', [COut, LetterOf(COut)]));
     Step;
   end;
 end;
@@ -678,12 +760,14 @@ begin
   WriteLn('  -M, --machine   файл машины (по умолчанию ../data/machine-M125-3.ini)');
   WriteLn('  -w, --wheels    перебить комплект, заданный в ключе');
   WriteLn('  -o ФАЙЛ         выходной файл (иначе stdout)');
+  WriteLn('  --log ФАЙЛ      подробная трасса: позиции, щупы, круги, шаг');
   Halt(0);
 end;
 
 var
-  MachinePath, WheelsPath, KeyPath, PosArg, OutPath, InPath, Text, Res, Err: string;
-  Live, Argc: Integer;
+  MachinePath, WheelsPath, KeyPath, PosArg, OutPath, InPath, LogPath,
+    Text, Res, Err: string;
+  Argc: Integer;
   SelfTest: Boolean = False;
 
 function NextArg(var I: Integer): string;
@@ -712,6 +796,7 @@ begin
     else if A = '--pos' then PosArg := ArgToUtf8(NextArg(I))
     else if A = '--live' then Live := StrToInt(NextArg(I))
     else if A = '-o' then OutPath := NextArg(I)
+    else if A = '--log' then LogPath := NextArg(I)
     else if A = '--selftest' then SelfTest := True
     else if (A = '-h') or (A = '--help') then Usage
     else if (Length(A) > 0) and (A[1] = '-') then Die('неизвестный ключ: %s', [A])
@@ -762,6 +847,7 @@ begin
   PosArg := '';
   OutPath := '';
   InPath := '';
+  LogPath := '';
   Live := 30;
 
   ParseArgs;
@@ -790,6 +876,22 @@ begin
   BuildKey(PosArg);
   Setup;
 
+  if LogPath <> '' then
+  begin
+    AssignFile(LogF, LogPath);
+    Rewrite(LogF);
+    SetTextCodePage(LogF, DefaultSystemCodePage);
+    Logging := True;
+    case Mode of
+      mCoding: Res := 'зашифрование';
+      mDecoding: Res := 'расшифрование';
+      else Res := 'сквозной прогон';
+    end;
+    WriteLn(LogF, Format('ключ %s, комплект %s, %s, живых контактов %d',
+                         [KeyPath, WheelSet, Res, Live]));
+    WriteLn(LogF, Format('старт %s', [PosLine]));
+  end;
+
   if InPath <> '' then Text := ReadAll(InPath)
   else
   begin
@@ -804,11 +906,14 @@ begin
     Переводы строк Process пропускает сам. }
   Res := Process(Text);
 
+  if Logging then CloseFile(LogF);
+
   if OutPath = '' then WriteLn(Res)
   else
   begin
     AssignFile(OutFile, OutPath);
     Rewrite(OutFile);
+    SetTextCodePage(OutFile, DefaultSystemCodePage);
     WriteLn(OutFile, Res);
     CloseFile(OutFile);
   end;

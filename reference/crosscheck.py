@@ -17,6 +17,7 @@ import fialka
 
 EXE = os.path.join(fialka.ROOT, 'pascal', 'fialka.exe')
 KEYS = ('3K', '5K', '6K')
+LIVE = (30, 26, 10, 30)
 
 
 def run_pascal(args, text):
@@ -39,21 +40,27 @@ def main():
         for i in range(rounds):
             wheel_set = KEYS[i % len(KEYS)]
             mode = 'decoding' if i % 2 else 'coding'
+            # 26 и 10 живых контактов гоняют возвратный контур: при 30 у
+            # рефлектора нет мёртвых контактов и он вообще не срабатывает
+            live = LIVE[i % len(LIVE)]
             tables = fialka.Tables(fialka.MACHINE,
                                    os.path.join(fialka.ROOT, 'data', 'wheels-%s.ini' % wheel_set))
             with open(tmp, 'w', encoding='utf-8') as f:
                 f.write(fialka.gen_card(tables, wheel_set))
             pos = fialka.gen_positions(tables.alphabet)
 
-            typable = tables.alphabet.replace(tables.alphabet[tables.space_contact - 1], '') + ' '
+            # набрать можно только то, чья клавиша подключена при этом live
+            kb = tables.keyboard[live]
+            typable = ''.join(tables.alphabet[c - 1] for c in range(1, fialka.N + 1)
+                              if kb[c] and c != tables.space_contact)
+            if mode == 'coding' and kb[tables.space_contact]:
+                typable += ' '
             text = ''.join(random.choice(typable) for _ in range(60))
-            if mode == 'decoding':                 # на расшифрование пробелы не подают
-                text = text.replace(' ', tables.alphabet[0])
 
-            _, key = fialka.load(fialka.MACHINE, tmp, mode=mode, position=pos)
+            _, key = fialka.load(fialka.MACHINE, tmp, mode=mode, live=live, position=pos)
             want = fialka.Machine(tables, key).process(text)
-            got = run_pascal(['-d' if mode == 'decoding' else '-e',
-                              '-k', tmp, '--pos', pos], text)
+            got = run_pascal(['-d' if mode == 'decoding' else '-e', '-k', tmp,
+                              '--pos', pos, '--live', str(live)], text)
             if got != want:
                 bad += 1
                 print('РАСХОЖДЕНИЕ %s %s\n  вход:    %s\n  оракул:  %s\n  паскаль: %s'
