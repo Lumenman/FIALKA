@@ -17,7 +17,24 @@ import fialka
 
 EXE = os.path.join(fialka.ROOT, 'pascal', 'fialka.exe')
 KEYS = ('3K', '5K', '6K')
-LIVE = (30, 26, 10, 30)
+TEXT_MODES = ('L', 'M', 'N', 'L')       # рычаг Б/С/Ц
+
+
+def pool_for(tables, text_mode, mode):
+    """Что можно подать на вход в этом режиме.
+
+    В расшифровании вход — шифртекст, то есть любые тридцать букв: в
+    смешанном режиме среди них попадутся ЦФ и БК, и обе реализации обязаны
+    одинаково собрать из них регистр.
+    """
+    if text_mode == 'N':
+        return ''.join(sorted(tables.digits))
+    if mode == 'decoding':
+        return tables.alphabet
+    chars = [ch for ch in tables.alphabet if tables.typable(ch, text_mode)] + [' ']
+    if text_mode == 'M':
+        chars += sorted(tables.upper_index)
+    return ''.join(chars)
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +74,12 @@ def check_prepare():
         ('цифра', ['--prepare'], 'ДОМ 7'),
         ('знака нет в таблице', ['--prepare'], 'ПРИВЕТ!'),
         ('подготовка на шифртексте', ['-d', '--prepare'], 'ФСИЮ'),
+        # в смешанном цифры и пунктуация набираются, а Ё по-прежнему нет
+        ('смешанный без подготовки', ['--mode', 'M'], 'ДОМ 7, ЪЭЙ'),
+        ('смешанный с подготовкой', ['--mode', 'M', '--prepare'], 'ЁЖ 5%'),
+        ('смешанный: чужой знак', ['--mode', 'M'], 'ПРИВЕТ!'),
+        ('цифры: буква', ['--mode', 'N'], '12А'),
+        ('цифры группами', ['--mode', 'N'], '24310 24310'),
     ]
     bad = 0
     for name, extra, text in cases:
@@ -84,9 +107,9 @@ def main():
         for i in range(rounds):
             wheel_set = KEYS[i % len(KEYS)]
             mode = 'decoding' if i % 2 else 'coding'
-            # 26 и 10 живых контактов гоняют возвратный контур: при 30 у
-            # рефлектора нет мёртвых контактов и он вообще не срабатывает
-            live = LIVE[i % len(LIVE)]
+            # режим цифр гоняет возвратный контур: при 30 живых контактах у
+            # рефлектора нет мёртвых и он вообще не срабатывает
+            text_mode = TEXT_MODES[i % len(TEXT_MODES)]
             tables = fialka.Tables(fialka.MACHINE,
                                    os.path.join(fialka.ROOT, 'data', 'wheels-%s.ini' % wheel_set))
             # ключи генерируются то одной реализацией, то другой: так каждый
@@ -101,22 +124,18 @@ def main():
             with open(tmp, 'w', encoding='utf-8') as f:
                 f.write(card + '\n')
 
-            # набрать можно только то, чья клавиша подключена при этом live
-            kb = tables.keyboard[live]
-            typable = ''.join(tables.alphabet[c - 1] for c in range(1, fialka.N + 1)
-                              if kb[c] and c != tables.space_contact)
-            if mode == 'coding' and kb[tables.space_contact]:
-                typable += ' '
-            text = ''.join(random.choice(typable) for _ in range(60))
+            text = ''.join(random.choice(pool_for(tables, text_mode, mode))
+                           for _ in range(60))
 
-            _, key = fialka.load(fialka.MACHINE, tmp, mode=mode, live=live, position=pos)
+            _, key = fialka.load(fialka.MACHINE, tmp, mode=mode,
+                                 text_mode=text_mode, position=pos)
             want = fialka.Machine(tables, key).process(text)
             got = run_pascal(['-d' if mode == 'decoding' else '-e', '-k', tmp,
-                              '--pos', pos, '--live', str(live)], text)
+                              '--pos', pos, '--mode', text_mode], text)
             if got != want:
                 bad += 1
-                print('РАСХОЖДЕНИЕ %s %s\n  вход:    %s\n  оракул:  %s\n  паскаль: %s'
-                      % (wheel_set, mode, text, want, got))
+                print('РАСХОЖДЕНИЕ %s %s %s\n  вход:    %s\n  оракул:  %s\n  паскаль: %s'
+                      % (wheel_set, mode, text_mode, text, want, got))
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)

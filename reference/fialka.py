@@ -48,7 +48,8 @@ class Tables:
     """Неизменное «железо»: машина плюс комплект дисков."""
 
     def __init__(self, machine_ini, wheels_ini):
-        m = configparser.ConfigParser(inline_comment_prefixes=(';',))
+        # interpolation=None: в верхнем ряду головки есть знак '%'
+        m = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
         m.read(machine_ini, encoding='utf-8')
         self.alphabet = m['machine']['alphabet'].strip()
         self.space_contact = int(m['machine']['space_contact'])
@@ -72,7 +73,22 @@ class Tables:
                 'alt_decoding': _row(m[k]['alt_decoding']),
             }
 
-        w = configparser.ConfigParser(inline_comment_prefixes=(';',))
+        # Верхний ряд печатающей головки: цифры, пунктуация и Ъ, Э, Й.
+        # ЦФ (контакт 20) и БК (контакт 7) — переключатели регистра, они
+        # проходят через шифратор как обычные знаки, но не печатаются.
+        self.shift_up = int(m['print']['shift_up'])
+        self.shift_down = int(m['print']['shift_down'])
+        self.upper = [''] + [{'~': '', '\\s': ';'}.get(t, t)
+                             for t in m['print']['upper'].split()]
+        if len(self.upper) != N + 1:
+            raise ValueError('в верхнем ряду головки должно быть %d знаков' % N)
+        self.upper_index = {g: i for i, g in enumerate(self.upper)
+                            if i and g and i not in (self.shift_up, self.shift_down)}
+        self.digits = {g: i for g, i in self.upper_index.items() if g.isdigit()}
+        if len(self.digits) != 10:
+            raise ValueError('в верхнем ряду должно быть десять цифр')
+
+        w = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
         w.read(wheels_ini, encoding='utf-8')
         self.wheel_set = w['set']['id'].strip()
         self.wiring, self.wiring_inv, self.pins = [None], [None], [None]
@@ -92,8 +108,9 @@ class Tables:
         if ch == ' ' and not decoding:
             return self.space_contact
         if ch not in self.alphabet:
-            raise ValueError('знак %d (%s): такого знака на машине нет, '
-                             'готовьте текст ключом --prepare' % (num, ch))
+            raise ValueError('знак %d (%s): такого знака на машине нет, готовьте '
+                             'текст ключом --prepare или смените режим на --mode M'
+                             % (num, ch))
         contact = self.alphabet.index(ch) + 1
         # Й делит контакт с пробелом и в открытом тексте молча ушла бы в пробел;
         # в шифртексте контакт 30 печатается как Й, там она законна
@@ -107,6 +124,39 @@ class Tables:
         if contact == self.space_contact and decoding:
             return ' '
         return self.alphabet[contact - 1]
+
+    # ---- ряды печатающей головки -------------------------------------------
+    def key_of(self, ch, num=0):
+        """Знак -> (ряд, контакт) для смешанного режима.
+
+        Нижний ряд — тридцать букв, но клавиши Ф и Ж отданы под ЦФ и БК, а Й
+        делит контакт с пробелом. Все три буквы переехали в верхний ряд, к
+        соседним клавишам, и набираются оттуда (мануал 3.2.10 и рис. 3.4.8).
+        """
+        if ch == ' ':
+            return 'lower', self.space_contact
+        if ch in self.alphabet:
+            contact = self.alphabet.index(ch) + 1
+            if contact not in (self.shift_up, self.shift_down, self.space_contact):
+                return 'lower', contact
+        if ch in self.upper_index:
+            return 'upper', self.upper_index[ch]
+        raise ValueError('знак %d (%s): такого знака нет ни в одном ряду головки, '
+                         'готовьте текст ключом --prepare' % (num, ch))
+
+    def typable(self, ch, text_mode):
+        """Набирается ли знак в этом режиме текста без подготовки."""
+        if ch in ' \r\n':
+            return True
+        if text_mode == 'N':
+            return ch in self.digits
+        if text_mode == 'L':
+            return ch in self.alphabet and self.alphabet.index(ch) + 1 != self.space_contact
+        try:
+            self.key_of(ch)
+        except ValueError:
+            return False
+        return True
 
 
 CARD_ROWS = ('wheel_order', 'ring', 'core_order', 'core_side',
@@ -150,12 +200,17 @@ def read_card(path):
 class Key:
     """Ключ дня (карта) плюс начальная установка сообщения.
 
-    Режим, живые контакты и прорезь сюда приходят снаружи: на машине это
+    Режим работы, режим текста и прорезь сюда приходят снаружи: на машине это
     тумблеры оператора и ключ сообщения из отдельной книги, а не карта.
+
+    Режим текста — рычаг Б/С/Ц (L/M/N). Число живых контактов задаёт не он, а
+    NumLock, у которого всего два положения: 10 в режиме цифр, 30 во всех
+    остальных (мануал 3.2.9). Шифр в буквенном и смешанном одинаков.
     """
 
-    def __init__(self, head, rows, tables, mode='coding', live=30, position=None):
-        self.mode, self.live = mode, live
+    def __init__(self, head, rows, tables, mode='coding', text_mode='L', position=None):
+        self.mode, self.text_mode = mode, text_mode
+        self.live = 10 if text_mode == 'N' else 30
         for name, row in zip(CARD_ROWS, rows):
             setattr(self, name, self._ten(row, tables))
         if position is not None:
@@ -199,13 +254,15 @@ class Key:
 PREPARE = os.path.join(ROOT, 'data', 'prepare.ini')
 
 
-def prepare(text, tables, path=PREPARE, report=None):
+def prepare(text, tables, path=PREPARE, report=None, text_mode='L'):
     """Подготовка текста: то, что оператор делал до машины.
 
-    Регистр приводится к прописным всегда и до таблицы. Замены документируются:
-    молча менять сообщение нельзя — получатель расшифрует не то, что отправляли.
-    Проверка идёт по исходному тексту, потому что после замен номера знаков
-    съезжают и указать на место в файле стало бы нечем.
+    Заменяется только то, что в этом режиме набрать нельзя: в смешанном цифры
+    и пунктуация идут на машину как есть, а в буквенном их приходится писать
+    словами. Регистр приводится к прописным всегда и до таблицы. Замены
+    документируются: молча менять сообщение нельзя — получатель расшифрует не
+    то, что отправляли. Проверка идёт по исходному тексту, потому что после
+    замен номера знаков съезжают и указать на место в файле стало бы нечем.
     """
     # delimiters: у FPC разделитель только '=', и двоеточие обязано быть
     # обычным ключом. optionxform: иначе ключи-буквы уедут в нижний регистр.
@@ -218,15 +275,15 @@ def prepare(text, tables, path=PREPARE, report=None):
     for ch in text.upper():
         if ch not in '\r\n':
             num += 1
-        if ch in table:
+        if tables.typable(ch, text_mode):
+            out.append(ch)
+        elif ch in table:
             if report:
                 report('подготовка: знак %d  %s -> %s' % (num, ch, table[ch]))
             out.append(table[ch])
         else:
-            if ch not in tables.alphabet and ch not in ' \r\n':
-                raise ValueError('знак %d (%s): такого знака нет ни на машине, '
-                                 'ни в таблице подготовки' % (num, ch))
-            out.append(ch)
+            raise ValueError('знак %d (%s): в этом режиме не набирается, и замены '
+                             'для него в таблице подготовки нет' % (num, ch))
     return ''.join(out)
 
 
@@ -339,8 +396,20 @@ class Machine:
             i = self.reentry_out[t]
         raise RuntimeError('выход: сигнал не вышел из контура')
 
+    def _run(self, contacts):
+        """Прогнать готовую последовательность контактов: шифр плюс шаг."""
+        out = []
+        for c in contacts:
+            out.append(self.contact(c))
+            self.step()
+        return out
+
     def process(self, text):
         decoding = self.k.mode == 'decoding'
+        if self.k.text_mode == 'N':
+            return self._numbers(text)
+        if self.k.text_mode == 'M':
+            return self._mixed_out(text) if decoding else self._mixed_in(text)
         out, num = [], 0
         for ch in text:
             if ch in '\r\n':
@@ -349,6 +418,63 @@ class Machine:
             c = self.contact(self.t.index(ch, decoding, num))
             out.append(self.t.letter(c, decoding))
             self.step()
+        return ''.join(out)
+
+    # ---- режим цифр: и вход, и выход цифрами -------------------------------
+    def _numbers(self, text):
+        """Живы десять клавиш, печатается верхний ряд головки. Пробела нет:
+        контакт 30 в этом положении мёртв, поэтому пробелы во входе — просто
+        разбивка на группы и пропускаются."""
+        contacts, num = [], 0
+        for ch in text:
+            if ch in ' \r\n':
+                continue
+            num += 1
+            if ch not in self.t.digits:
+                raise ValueError('знак %d (%s): в режиме цифр набираются только '
+                                 'цифры' % (num, ch))
+            contacts.append(self.t.digits[ch])
+        return ''.join(self.t.upper[c] for c in self._run(contacts))
+
+    # ---- смешанный: регистр раскрывается на входе --------------------------
+    def _mixed_in(self, text):
+        """ЦФ и БК оператор жал сам; программа расставляет их по знакам текста.
+        В конце головка возвращается к буквам, чтобы следующее сообщение
+        начиналось с известного регистра."""
+        contacts, register, num = [], 'lower', 0
+        for ch in text:
+            if ch in '\r\n':
+                continue
+            num += 1
+            row, contact = self.t.key_of(ch, num)
+            if row != register:
+                contacts.append(self.t.shift_up if row == 'upper' else self.t.shift_down)
+                register = row
+            contacts.append(contact)
+        if register == 'upper':
+            contacts.append(self.t.shift_down)
+        return ''.join(self.t.letter(c, False) for c in self._run(contacts))
+
+    # ---- смешанный: регистр собирается на выходе ---------------------------
+    def _mixed_out(self, text):
+        """Переключения печати не дают — они и есть команда печатающей головке."""
+        contacts, num = [], 0
+        for ch in text:
+            if ch in '\r\n':
+                continue
+            num += 1
+            contacts.append(self.t.index(ch, True, num))
+        out, register = [], 'lower'
+        for c in self._run(contacts):
+            if c == self.t.shift_up:
+                register = 'upper'
+            elif c == self.t.shift_down:
+                register = 'lower'
+            elif register == 'upper' and self.t.upper[c]:
+                out.append(self.t.upper[c])
+            else:
+                # контакт пробела верхнего знака не имеет: печатается пробелом
+                out.append(self.t.letter(c, True))
         return ''.join(out)
 
 
@@ -386,12 +512,12 @@ def gen_card(tables, wheel_set, card='identity', position=False):
     return '\n'.join(lines) + '\n'
 
 
-def _random_key(tables, mode='coding'):
+def _random_key(tables, mode='coding', text_mode='L'):
     """Случайный ключ через генератор и разбор — так самопроверки заодно
     гоняют формат карты, а не только механизм."""
     text = gen_card(tables, tables.wheel_set, card='builtin', position=True)
     head, rows = parse_card(text.splitlines())
-    return Key(head, rows, tables, mode=mode)
+    return Key(head, rows, tables, mode=mode, text_mode=text_mode)
 
 
 def check_card(tables):
@@ -453,6 +579,20 @@ def selftest(tables, rounds=200):
         dec = Machine(tables, key).process(enc)
         if dec != msg:
             return 'обратимость нарушена:\n  %s\n  %s' % (msg, dec)
+
+    # смешанный и цифровой: обратимость вместе с автоматикой регистра
+    mixed = sorted(tables.upper_index) + [c for c in typable
+                                          if tables.typable(c, 'M')]
+    for text_mode, pool in (('M', mixed), ('N', sorted(tables.digits))):
+        for _ in range(rounds // 8):
+            key = _random_key(tables, 'coding', text_mode)
+            msg = ''.join(random.choice(pool) for _ in range(40))
+            enc = Machine(tables, key).process(msg)
+            key.mode = 'decoding'
+            dec = Machine(tables, key).process(enc)
+            if dec != msg:
+                return ('обратимость нарушена в режиме %s:\n  %s\n  %s'
+                        % (text_mode, msg, dec))
     return None
 
 
@@ -482,14 +622,60 @@ def verify_demo():
     return None
 
 
+TEXT_MODES = {'L': 'L', 'M': 'M', 'N': 'N', 'Б': 'L', 'С': 'M', 'Ц': 'N'}
+
+
+def text_mode_arg(value):
+    """Режим текста: латиницей или русскими буквами с рычага."""
+    key = value.upper()
+    if key not in TEXT_MODES:
+        raise argparse.ArgumentTypeError('режим текста: L, M или N (Б, С, Ц)')
+    return TEXT_MODES[key]
+
+
+VECTORS = os.path.join(ROOT, 'demo', 'vectors.txt')
+
+
+def verify_vectors(path=VECTORS):
+    """Векторы, снятые с оригинальной программы: три режима текста.
+
+    В отличие от demo/de.txt эти пары построены не нами, поэтому они
+    доказывают совпадение с оригиналом, а не только неизменность поведения.
+    """
+    if not os.path.exists(path):
+        return 'пропущена (нет %s)' % path
+    key_path = os.path.join(ROOT, 'keys', 'kt16_08_26.txt')
+    if not os.path.exists(key_path):
+        return 'пропущена (нет ключа)'
+    bad, count = [], 0
+    for line in open(path, encoding='utf-8'):
+        line = line.strip()
+        if not line or line.startswith(';'):
+            continue
+        text_mode, plain, cipher = (part.strip() for part in line.split('|'))
+        count += 1
+        tables, key = load(MACHINE, key_path, text_mode=text_mode)
+        got = Machine(tables, key).process(plain)
+        if got != cipher:
+            bad.append('%s: %s -> %s, ожидалось %s' % (text_mode, plain, got, cipher))
+        tables, key = load(MACHINE, key_path, mode='decoding', text_mode=text_mode)
+        back = Machine(tables, key).process(cipher)
+        if back != plain:
+            bad.append('%s: %s -> %s, ожидалось %s' % (text_mode, cipher, back, plain))
+    if bad:
+        return 'РАСХОЖДЕНИЕ\n  ' + '\n  '.join(bad)
+    return 'OK — векторов %d, оба направления' % count
+
+
 def main():
     ap = argparse.ArgumentParser(description='Эталонная модель Фиалки М-125')
     ap.add_argument('--machine', default=MACHINE)
     ap.add_argument('--wheels', help='перебить комплект, заданный в ключе')
     ap.add_argument('--key', help='ключ дня (карта)')
     ap.add_argument('--pos', help='ключ сообщения: 10 букв начальной установки')
-    ap.add_argument('--live', type=int, default=30, choices=(10, 26, 30),
-                    help='живые контакты: 30 буквы, 26 смешанный, 10 цифры')
+    ap.add_argument('--mode', dest='text_mode', default='L', type=text_mode_arg,
+                    help='режим текста, рычаг Б/С/Ц: L буквы (по умолчанию), '
+                         'M смешанный, N цифры')
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument('-e', dest='mode', action='store_const', const='coding',
                       help='зашифрование (по умолчанию)')
@@ -527,7 +713,10 @@ def main():
         print('структурные проверки:', 'ПРОВАЛ — ' + structural if structural else 'OK')
         demo = verify_demo()
         print('сверка с demo/:', demo if demo else 'OK — знак в знак')
-        return 1 if (structural or (demo and 'пропущена' not in demo)) else 0
+        vectors = verify_vectors()
+        print('векторы с оригинала:', vectors)
+        return 1 if (structural or (demo and 'пропущена' not in demo)
+                     or vectors.startswith('РАСХОЖДЕНИЕ')) else 0
 
     if not args.key:
         ap.error('нужен --key, --genkey, --genpos или --selftest')
@@ -535,12 +724,13 @@ def main():
         # на шифртексте подготовка подменила бы Й и испортила его
         ap.error('--prepare применяется только к открытому тексту')
     tables, key = load(args.machine, args.key, args.wheels,
-                       mode=args.mode, live=args.live, position=args.pos)
+                       mode=args.mode, text_mode=args.text_mode, position=args.pos)
     text = open(args.src, encoding='utf-8').read() if args.src else sys.stdin.read()
     # без .strip(): пробел — знак машины, переводы строк process пропускает сам
     text = text.upper()          # регистра на машине нет: «п» и «П» — одна клавиша
     if args.prepare:
-        text = prepare(text, tables, report=lambda s: print(s, file=sys.stderr))
+        text = prepare(text, tables, report=lambda s: print(s, file=sys.stderr),
+                       text_mode=args.text_mode)
     sys.stdout.write(Machine(tables, key).process(text) + '\n')
     return 0
 

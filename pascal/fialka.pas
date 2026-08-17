@@ -28,13 +28,20 @@ type
   TWire = array[TContact] of 0..N;      { 0 — нет связи }
   TPins = set of TContact;
   TRow = array[1..SLOTS] of Integer;    { ряд карты }
+  TIntArray = array of Integer;
   TMode = (mCoding, mDecoding, mPlain);
+  TTextMode = (tmLetters, tmMixed, tmNumbers);   { рычаг Б/С/Ц }
 
 var
   { «Железо»: машина плюс комплект дисков. }
   Alphabet: array[TContact] of string;  { UTF-8, по знаку в элементе }
+  Upper: array[TContact] of string;     { верхний ряд печатающей головки }
   SpaceContact, ProbeEven, ProbeOdd: Integer;
-  Live: Integer = 30;                   { тумблер Б/С/Ц: живых контактов }
+  ShiftUp: Integer = 0;                 { ЦФ — регистр цифр }
+  ShiftDown: Integer = 0;               { БК — регистр букв }
+  { NumLock, а не рычаг режима: 10 в режиме цифр, 30 во всех остальных
+    (мануал 3.2.9). Шифр в буквенном и смешанном режимах одинаков. }
+  Live: Integer = 30;
   Entry, EntryInv, CardBuiltin: TWire;
   Keyboard, KeyboardInv: TWire;
   Refl, ReentryIn, ReentryOut: TWire;
@@ -45,6 +52,7 @@ var
 
   { Ключ дня плюс начальная установка сообщения. }
   Mode: TMode = mCoding;
+  TextMode: TTextMode = tmLetters;
   WheelOrder, Ring, CoreOrder, CoreSide, CoreOffset, Position: TRow;
   Card, CardInv: TWire;
 
@@ -80,6 +88,24 @@ function Tokens(const S: string): TStringList;
 begin
   Result := TStringList.Create;
   ExtractStrings([' ', #9], [], PChar(S), Result);
+end;
+
+{ То же, но без кавычек как разделителей: ExtractStrings считает '"' началом
+  строки в кавычках и склеивает остаток, а в верхнем ряду головки '"' — знак. }
+function RawTokens(const S: string): TStringList;
+var
+  I, Start: Integer;
+begin
+  Result := TStringList.Create;
+  I := 1;
+  while I <= Length(S) do
+  begin
+    while (I <= Length(S)) and ((S[I] = ' ') or (S[I] = #9)) do Inc(I);
+    if I > Length(S) then Break;
+    Start := I;
+    while (I <= Length(S)) and (S[I] <> ' ') and (S[I] <> #9) do Inc(I);
+    Result.Add(Copy(S, Start, I - Start));
+  end;
 end;
 
 { Длина знака UTF-8 по ведущему байту. }
@@ -120,6 +146,44 @@ begin
   for I := 1 to N do
     if Alphabet[I] = Ch then Exit(I);
   Result := 0;
+end;
+
+{ Знак верхнего ряда головки -> контакт; 0 — такого знака в ряду нет.
+  Сами переключатели ЦФ и БК знаками не считаются: они команды печати. }
+function UpperContact(const Ch: string): Integer;
+var
+  I: Integer;
+begin
+  for I := 1 to N do
+    if (Upper[I] = Ch) and (Upper[I] <> '')
+       and (I <> ShiftUp) and (I <> ShiftDown) then Exit(I);
+  Result := 0;
+end;
+
+function DigitContact(const Ch: string): Integer;
+begin
+  Result := 0;
+  if (Length(Ch) = 1) and (Ch[1] >= '0') and (Ch[1] <= '9') then
+    Result := UpperContact(Ch);
+end;
+
+{ Набирается ли знак в текущем режиме рычага без подготовки текста. }
+function Typable(const Ch: string): Boolean;
+var
+  C: Integer;
+begin
+  if (Ch = ' ') or (Ch = #13) or (Ch = #10) then Exit(True);
+  C := ContactOf(Ch);
+  case TextMode of
+    tmNumbers: Result := DigitContact(Ch) <> 0;
+    tmLetters: Result := (C <> 0) and (C <> SpaceContact);
+  else
+    { в смешанном клавиши Ф и Ж отданы под ЦФ и БК, а Й делит контакт с
+      пробелом: все три буквы набираются из верхнего ряда }
+    Result := ((C <> 0) and (C <> SpaceContact)
+               and (C <> ShiftUp) and (C <> ShiftDown))
+              or (UpperContact(Ch) <> 0);
+  end;
 end;
 
 { Регистра на машине нет: «п» и «П» — одна клавиша, поэтому приводить к
@@ -215,7 +279,9 @@ end;
 procedure LoadMachine(const Path: string; Live: Integer);
 var
   Ini: TIniFile;
-  Sect: string;
+  L: TStringList;
+  I: Integer;
+  Sect, Tok: string;
 begin
   if not FileExists(Path) then Die('нет файла машины: %s', [Path]);
   Ini := TIniFile.Create(Path);
@@ -229,6 +295,27 @@ begin
     ParseWire(Ini.ReadString('entry', 'wiring', ''), Entry);
     Invert(Entry, EntryInv);
     ParseWire(Ini.ReadString('card', 'builtin', ''), CardBuiltin);
+
+    { Верхний ряд головки: цифры, пунктуация и Ъ, Э, Й. ЦФ и БК — служебные:
+      через шифратор проходят как обычные знаки, но не печатаются. }
+    L := RawTokens(Ini.ReadString('print', 'upper', ''));
+    try
+      if L.Count <> N then
+        Die('в верхнем ряду головки %d знаков, а нужно %d', [L.Count, N]);
+      for I := 1 to N do
+      begin
+        Tok := L[I - 1];
+        if Tok = '~' then Tok := ''
+        else if Tok = '\s' then Tok := ';';    { ';' съедает формат INI }
+        Upper[I] := Tok;
+      end;
+    finally
+      L.Free;
+    end;
+    ShiftUp := Ini.ReadInteger('print', 'shift_up', 0);
+    ShiftDown := Ini.ReadInteger('print', 'shift_down', 0);
+    if (ShiftUp < 1) or (ShiftUp > N) or (ShiftDown < 1) or (ShiftDown > N) then
+      Die('shift_up и shift_down должны быть контактами 1..%d', [N]);
 
     Sect := Format('keyboard.%d', [Live]);
     if not Ini.SectionExists(Sect) then Die('в машине нет секции [%s]', [Sect]);
@@ -333,23 +420,26 @@ begin
   begin
     Ch := NextChar(S, I);
     if (Ch <> #13) and (Ch <> #10) then Inc(Num);
-    Hit := False;
-    for J := 0 to High(PrepFrom) do
-      if PrepFrom[J] = Ch then
-      begin
-        WriteLn(StdErr, Format('подготовка: знак %d  %s -> %s', [Num, Ch, PrepTo[J]]));
-        Result := Result + PrepTo[J];
-        Hit := True;
-        Break;
-      end;
-    if not Hit then
+    { заменяется только то, что в этом режиме набрать нельзя: в смешанном
+      цифры и пунктуация идут на машину как есть }
+    if Typable(Ch) then
+      Result := Result + Ch
+    else
     begin
+      Hit := False;
+      for J := 0 to High(PrepFrom) do
+        if PrepFrom[J] = Ch then
+        begin
+          WriteLn(StdErr, Format('подготовка: знак %d  %s -> %s', [Num, Ch, PrepTo[J]]));
+          Result := Result + PrepTo[J];
+          Hit := True;
+          Break;
+        end;
       { проверяем по исходному тексту: после замен номера знаков уже съедут,
         и указывать на место в файле стало бы нечем }
-      if (Ch <> ' ') and (Ch <> #13) and (Ch <> #10) and (ContactOf(Ch) = 0) then
-        Die('знак %d (%s): такого знака нет ни на машине, ни в таблице подготовки',
-            [Num, Ch]);
-      Result := Result + Ch;
+      if not Hit then
+        Die('знак %d (%s): в этом режиме не набирается, и замены для него '
+            + 'в таблице подготовки нет', [Num, Ch]);
     end;
   end;
 end;
@@ -372,6 +462,10 @@ var
   Line, Name, Value: string;
 begin
   if not FileExists(Path) then Die('нет файла ключа: %s', [Path]);
+  { карта читается заново: самопроверки грузят несколько ключей подряд }
+  CardRowCount := 0;
+  HeadSet := '';
+  HeadCard := 'identity';
   F := TStringList.Create;
   try
     F.LoadFromFile(Path);
@@ -704,8 +798,8 @@ begin
   begin
     Result := ContactOf(Ch);
     if Result = 0 then
-      Die('знак %d (%s): такого знака на машине нет, готовьте текст ключом --prepare',
-          [Num, Ch]);
+      Die('знак %d (%s): такого знака на машине нет, готовьте текст ключом '
+          + '--prepare или смените режим на --mode M', [Num, Ch]);
     { Й делит контакт с пробелом, поэтому в открытом тексте её набрать нельзя:
       она молча ушла бы в пробел. В шифртексте контакт 30 печатается как Й,
       так что при расшифровании она законна. }
@@ -713,7 +807,7 @@ begin
       Die('знак %d (%s): её клавиша занята пробелом, замените на И (мануал 4.5) '
           + 'или примените --prepare', [Num, Ch]);
   end;
-  { при 26 и 10 живых контактах часть клавиш отключена }
+  { в режиме цифр живы только десять клавиш }
   if Keyboard[Result] = 0 then
     Die('знак %d (%s): при %d живых контактах его клавиша отключена',
         [Num, Ch, Live]);
@@ -725,28 +819,108 @@ begin
   Result := Alphabet[C];
 end;
 
-function Process(const Text: string): string;
+{ Знак -> контакт и ряд головки, для смешанного режима. Нижний ряд — тридцать
+  букв, но клавиши Ф и Ж отданы под ЦФ и БК, а Й делит контакт с пробелом:
+  все три буквы переехали в верхний ряд к соседним клавишам (мануал 3.2.10). }
+function KeyOf(const Ch: string; Num: Integer; out UpperRow: Boolean): Integer;
 var
-  I, Num, CIn, COut: Integer;
-  Ch: string;
+  C: Integer;
 begin
-  Result := '';
+  UpperRow := False;
+  if Ch = ' ' then Exit(SpaceContact);
+  C := ContactOf(Ch);
+  if (C <> 0) and (C <> SpaceContact) and (C <> ShiftUp) and (C <> ShiftDown) then
+    Exit(C);
+  C := UpperContact(Ch);
+  if C = 0 then
+    Die('знак %d (%s): такого знака нет ни в одном ряду головки, '
+        + 'готовьте текст ключом --prepare', [Num, Ch]);
+  UpperRow := True;
+  Result := C;
+end;
+
+procedure Push(var A: TIntArray; V: Integer);
+begin
+  SetLength(A, Length(A) + 1);
+  A[High(A)] := V;
+end;
+
+{ Текст -> последовательность нажатий. В смешанном режиме сюда добавляются
+  ЦФ и БК: на машине их жал оператор, когда следующий знак жил в другом ряду.
+  В конце головка возвращается к буквам, чтобы следующее сообщение начиналось
+  с известного регистра. }
+function InputContacts(const Text: string): TIntArray;
+var
+  I, Num, C: Integer;
+  Ch: string;
+  UpperRow, Reg: Boolean;
+begin
+  Result := nil;
   I := 1;
   Num := 0;
+  Reg := False;
   while I <= Length(Text) do
   begin
     Ch := NextChar(Text, I);
     if (Ch = #13) or (Ch = #10) then Continue;
+    { в режиме цифр пробела нет вовсе: контакт 30 мёртв, а пробелы во входе —
+      разбивка на группы }
+    if (TextMode = tmNumbers) and (Ch = ' ') then Continue;
     Inc(Num);
-    CIn := IndexOfChar(Ch, Num);
+    if TextMode = tmNumbers then
+    begin
+      C := DigitContact(Ch);
+      if C = 0 then
+        Die('знак %d (%s): в режиме цифр набираются только цифры', [Num, Ch]);
+    end
+    else if (TextMode = tmMixed) and (Mode <> mDecoding) then
+    begin
+      C := KeyOf(Ch, Num, UpperRow);
+      if UpperRow <> Reg then
+      begin
+        if UpperRow then Push(Result, ShiftUp) else Push(Result, ShiftDown);
+        Reg := UpperRow;
+      end;
+    end
+    else
+      C := IndexOfChar(Ch, Num);
+    Push(Result, C);
+  end;
+  if (TextMode = tmMixed) and (Mode <> mDecoding) and Reg then
+    Push(Result, ShiftDown);
+end;
+
+function Process(const Text: string): string;
+var
+  Ins: TIntArray;
+  I, COut: Integer;
+  Reg: Boolean;
+begin
+  Result := '';
+  Ins := InputContacts(Text);
+  Reg := False;
+  for I := 0 to High(Ins) do
+  begin
     if Logging then
     begin
       WriteLn(LogF);
-      WriteLn(LogF, Format('--- знак %d: %s = контакт %d', [Num, Ch, CIn]));
+      WriteLn(LogF, Format('--- знак %d: контакт %d', [I + 1, Ins[I]]));
       WriteLn(LogF, Format('  поз   %s   щупы %s', [PosLine, PinLine]));
     end;
-    COut := Contact(CIn);
-    Result := Result + LetterOf(COut);
+    COut := Contact(Ins[I]);
+    if TextMode = tmNumbers then
+      Result := Result + Upper[COut]
+    else if (TextMode = tmMixed) and (Mode = mDecoding) then
+    begin
+      { переключения печати не дают: они и есть команда печатающей головке }
+      if COut = ShiftUp then Reg := True
+      else if COut = ShiftDown then Reg := False
+      else if Reg and (Upper[COut] <> '') then Result := Result + Upper[COut]
+      { контакт пробела верхнего знака не имеет: печатается пробелом }
+      else Result := Result + LetterOf(COut);
+    end
+    else
+      Result := Result + LetterOf(COut);
     if Logging then
       WriteLn(LogF, Format('  =      контакт %d = %s', [COut, LetterOf(COut)]));
     Step;
@@ -917,6 +1091,122 @@ begin
   Result := '';
 end;
 
+{ 4. Смешанный и цифровой режимы: обратимость вместе с автоматикой регистра.
+     Клавиатура и рефлектор зависят от NumLock, поэтому машина перечитывается. }
+function TestModes(const MachinePath: string; Rounds: Integer): string;
+var
+  Pool: TStringList;
+  R, I, C: Integer;
+  Msg, Enc, Dec, Name: string;
+  TM: TTextMode;
+begin
+  Result := '';
+  for TM := tmMixed to tmNumbers do
+  begin
+    TextMode := TM;
+    if TM = tmNumbers then Live := 10 else Live := 30;
+    if TM = tmNumbers then Name := 'цифр' else Name := 'смешанном';
+    LoadMachine(MachinePath, Live);
+    Pool := TStringList.Create;
+    try
+      for C := 1 to N do
+        if TM = tmNumbers then
+        begin
+          if DigitContact(Upper[C]) <> 0 then Pool.Add(Upper[C]);
+        end
+        else
+        begin
+          if (C <> ShiftUp) and (C <> ShiftDown) and (C <> SpaceContact) then
+            Pool.Add(Alphabet[C]);
+          if (Upper[C] <> '') and (C <> ShiftUp) and (C <> ShiftDown) then
+            Pool.Add(Upper[C]);
+        end;
+      if TM = tmMixed then Pool.Add(' ');
+      for R := 1 to Rounds do
+      begin
+        RandomKey;
+        Msg := '';
+        for I := 1 to 40 do Msg := Msg + Pool[Random(Pool.Count)];
+        Mode := mCoding;
+        Setup;
+        Enc := Process(Msg);
+        Mode := mDecoding;
+        Setup;
+        Dec := Process(Enc);
+        if Dec <> Msg then
+          Result := Format('обратимость в режиме %s нарушена:'#10'  %s'#10'  %s',
+                           [Name, Msg, Dec]);
+        if Result <> '' then Break;
+      end;
+    finally
+      Pool.Free;
+    end;
+    if Result <> '' then Break;
+  end;
+  TextMode := tmLetters;
+  Live := 30;
+  LoadMachine(MachinePath, Live);
+end;
+
+{ 5. Векторы, снятые с оригинальной программы: в отличие от demo/de.txt они
+     построены не нами, поэтому доказывают совпадение с оригиналом. }
+function TestVectors(const MachinePath, KeyPath, VecPath: string): string;
+var
+  F: TStringList;
+  I, P1, P2, Count: Integer;
+  Line, Tok, Plain, Cipher, Got: string;
+begin
+  Result := '';
+  Count := 0;
+  if not (FileExists(KeyPath) and FileExists(VecPath)) then
+    Exit('пропущена (нет demo/vectors.txt)');
+  F := TStringList.Create;
+  try
+    F.LoadFromFile(VecPath);
+    for I := 0 to F.Count - 1 do
+    begin
+      Line := Trim(F[I]);
+      if (Line = '') or (Line[1] = ';') then Continue;
+      P1 := Pos('|', Line);
+      P2 := Length(Line);
+      while (P2 > P1) and (Line[P2] <> '|') do Dec(P2);
+      if (P1 = 0) or (P2 = P1) then Exit(Format('строка %d: нужно два "|"', [I + 1]));
+      Tok := UpperCase(Trim(Copy(Line, 1, P1 - 1)));
+      Plain := Trim(Copy(Line, P1 + 1, P2 - P1 - 1));
+      Cipher := Trim(Copy(Line, P2 + 1, MaxInt));
+      if Tok = 'N' then TextMode := tmNumbers
+      else if Tok = 'M' then TextMode := tmMixed
+      else TextMode := tmLetters;
+      if TextMode = tmNumbers then Live := 10 else Live := 30;
+      LoadMachine(MachinePath, Live);
+      ReadCard(KeyPath);
+      if HeadSet = '' then Exit('в ключе нет "set ="');
+      LoadWheels(ExtractFilePath(MachinePath) + Format('wheels-%s.ini', [HeadSet]));
+      BuildKey('');
+      Inc(Count);
+
+      Mode := mCoding;
+      Setup;
+      Got := Process(Plain);
+      if Got <> Cipher then
+        Exit(Format('РАСХОЖДЕНИЕ %s: %s -> %s, ожидалось %s',
+                    [Tok, Plain, Got, Cipher]));
+      Mode := mDecoding;
+      Setup;
+      Got := Process(Cipher);
+      if Got <> Plain then
+        Exit(Format('РАСХОЖДЕНИЕ %s: %s -> %s, ожидалось %s',
+                    [Tok, Cipher, Got, Plain]));
+    end;
+  finally
+    F.Free;
+  end;
+  TextMode := tmLetters;
+  Live := 30;
+  LoadMachine(MachinePath, Live);
+  Result := Format('OK — векторов %d, оба направления', [Count]);
+end;
+
 { ---- консольный интерфейс ----------------------------------------------- }
 
 function Near(const Name: string): string;
@@ -934,7 +1224,8 @@ begin
   WriteLn('  -e, -d, -p      зашифрование (по умолчанию), расшифрование, сквозной прогон');
   WriteLn('  -k, --key ФАЙЛ  ключ дня в формате перфокарты');
   WriteLn('  --pos "..."     ключ сообщения: 10 букв начальной установки');
-  WriteLn('  --live N        живые контакты: 30 буквы, 26 смешанный, 10 цифры');
+  WriteLn('  --mode L|M|N    режим текста, рычаг Б/С/Ц: буквы (по умолчанию),');
+  WriteLn('                  смешанный (цифры и знаки через ЦФ/БК), только цифры');
   WriteLn('  -M, --machine   файл машины (по умолчанию ../data/machine-M125-3.ini)');
   WriteLn('  -w, --wheels    перебить комплект, заданный в ключе');
   WriteLn('  -o ФАЙЛ         выходной файл (иначе stdout)');
@@ -982,7 +1273,7 @@ end;
 procedure ParseArgs;
 var
   I: Integer;
-  A: string;
+  A, T: string;
 begin
   I := 1;
   Argc := ParamCount;
@@ -996,7 +1287,15 @@ begin
     else if (A = '-M') or (A = '--machine') then MachinePath := NextArg(I)
     else if (A = '-w') or (A = '--wheels') then WheelsPath := NextArg(I)
     else if A = '--pos' then PosArg := ArgToUtf8(NextArg(I))
-    else if A = '--live' then Live := StrToInt(NextArg(I))
+    else if A = '--mode' then
+    begin
+      T := UpFold(ArgToUtf8(NextArg(I)));
+      if (T = 'L') or (T = 'Б') then TextMode := tmLetters
+      else if (T = 'M') or (T = 'С') then TextMode := tmMixed
+      else if (T = 'N') or (T = 'Ц') then TextMode := tmNumbers
+      else Die('режим текста: L, M или N (Б, С, Ц), а не %s', [T]);
+      if TextMode = tmNumbers then Live := 10 else Live := 30;
+    end
     else if A = '-o' then OutPath := NextArg(I)
     else if A = '--log' then LogPath := NextArg(I)
     else if A = '--selftest' then SelfTest := True
@@ -1018,7 +1317,7 @@ end;
 
 procedure RunSelfTest;
 var
-  Bad: string;
+  Bad, Vec: string;
 begin
   LoadWheels(ExtractFilePath(MachinePath) + 'wheels-6K.ini');
   WriteLn('комплект дисков: ', WheelSet);
@@ -1026,6 +1325,7 @@ begin
   RandSeed := 20260817;
   Bad := TestPlain(200);
   if Bad = '' then Bad := TestReversible(50);
+  if Bad = '' then Bad := TestModes(MachinePath, 25);
   if Bad = '' then WriteLn('структурные проверки: OK')
   else WriteLn('структурные проверки: ПРОВАЛ — ', Bad);
 
@@ -1035,7 +1335,12 @@ begin
   if Err = '' then WriteLn('сверка с demo/: OK — знак в знак')
   else WriteLn('сверка с demo/: ', Err);
 
-  if (Bad <> '') or ((Err <> '') and (Pos('пропущена', Err) = 0)) then Halt(1);
+  Vec := TestVectors(MachinePath, Near('keys' + DirectorySeparator + 'kt16_08_26.txt'),
+                     Near('demo' + DirectorySeparator + 'vectors.txt'));
+  WriteLn('векторы с оригинала: ', Vec);
+
+  if (Bad <> '') or ((Err <> '') and (Pos('пропущена', Err) = 0))
+     or (Pos('РАСХОЖДЕНИЕ', Vec) > 0) then Halt(1);
 end;
 
 var
