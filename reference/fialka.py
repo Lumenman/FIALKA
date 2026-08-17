@@ -301,8 +301,8 @@ def verify_demo():
         return 'пропущена (нет: %s)' % ', '.join(missing)
     tables = Tables(paths['machine'], paths['wheels'])
     key = Key(paths['key'], tables)
-    plain = open(paths['plain'], encoding='cp1251').read().strip()
-    expect = open(paths['cipher'], encoding='cp1251').read().strip()
+    plain = open(paths['plain'], encoding='utf-8').read().strip()
+    expect = open(paths['cipher'], encoding='utf-8').read().strip()
     got = Machine(tables, key).process(plain)
     if got != expect:
         return 'РАСХОЖДЕНИЕ\n  получено: %s\n  ожидалось: %s' % (got, expect)
@@ -315,8 +315,7 @@ def main():
     ap.add_argument('--wheels', default=os.path.join(HERE, 'data', 'wheels-6K.ini'))
     ap.add_argument('--key', help='файл ключа (INI)')
     ap.add_argument('--in', dest='src', help='входной файл (иначе stdin)')
-    ap.add_argument('--encoding', default='utf-8',
-                    help='кодировка входного файла (demo/ лежит в cp1251)')
+    ap.add_argument('--encoding', default='utf-8', help='кодировка входного файла')
     ap.add_argument('--selftest', action='store_true', help='структурные проверки')
     args = ap.parse_args()
 

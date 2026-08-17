@@ -22,7 +22,7 @@ reference/
 
 ```bash
 python fialka.py --selftest
-python fialka.py --key keys/kt16_08_26.ini --in ../demo/de.txt --encoding cp1251
+python fialka.py --key keys/kt16_08_26.ini --in ../demo/de.txt
 ```
 
 По умолчанию берётся `data/machine-M125-3.ini` и `data/wheels-6K.ini`;
