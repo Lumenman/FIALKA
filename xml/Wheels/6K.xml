@@ -1,0 +1,357 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!DOCTYPE crypto:fialka PUBLIC "-//XAT//Fialka Cipher 1.0//" "fialka.dtd">
+<fialka>
+
+  <wheels id="6K" type="adjustable" country="CZ" desc="Czechoslovakia" auth="Paul Reuvers and Marc Simons" date="2014-07-05">
+
+    <wheel id="1" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="13" p="true"/>
+        <w id="02" s="22" p="true"/>
+        <w id="03" s="08" p="true"/>
+        <w id="04" s="18"/>
+        <w id="05" s="20" p="true"/>
+        <w id="06" s="12"/>
+        <w id="07" s="28" p="true"/>
+        <w id="08" s="04"/>
+        <w id="09" s="15"/>
+        <w id="10" s="27"/>
+        <w id="11" s="03" p="true"/>
+        <w id="12" s="05"/>
+        <w id="13" s="16" p="true"/>
+        <w id="14" s="14" p="true"/>
+        <w id="15" s="23"/>
+        <w id="16" s="26" p="true"/>
+        <w id="17" s="01" p="true"/>
+        <w id="18" s="25"/>
+        <w id="19" s="17" p="true"/>
+        <w id="20" s="11" p="true"/>
+        <w id="21" s="30"/>
+        <w id="22" s="10" p="true"/>
+        <w id="23" s="24" p="true"/>
+        <w id="24" s="07" p="true"/>
+        <w id="25" s="06" p="true"/>
+        <w id="26" s="21"/>
+        <w id="27" s="29" p="true"/>
+        <w id="28" s="02"/>
+        <w id="29" s="09" p="true"/>
+        <w id="30" s="19" p="true"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="2" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="20"/>
+        <w id="02" s="08"/>
+        <w id="03" s="05"/>
+        <w id="04" s="15"/>
+        <w id="05" s="04"/>
+        <w id="06" s="28" p="true"/>
+        <w id="07" s="21"/>
+        <w id="08" s="01" p="true"/>
+        <w id="09" s="24"/>
+        <w id="10" s="13"/>
+        <w id="11" s="29"/>
+        <w id="12" s="12"/>
+        <w id="13" s="14" p="true"/>
+        <w id="14" s="23"/>
+        <w id="15" s="25"/>
+        <w id="16" s="07" p="true"/>
+        <w id="17" s="09"/>
+        <w id="18" s="30" p="true"/>
+        <w id="19" s="27"/>
+        <w id="20" s="03" p="true"/>
+        <w id="21" s="11"/>
+        <w id="22" s="18" p="true"/>
+        <w id="23" s="17"/>
+        <w id="24" s="19" p="true"/>
+        <w id="25" s="22" p="true"/>
+        <w id="26" s="10"/>
+        <w id="27" s="02" p="true"/>
+        <w id="28" s="26"/>
+        <w id="29" s="06" p="true"/>
+        <w id="30" s="16"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="3" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="29"/>
+        <w id="02" s="11"/>
+        <w id="03" s="04"/>
+        <w id="04" s="22" p="true"/>
+        <w id="05" s="24"/>
+        <w id="06" s="16"/>
+        <w id="07" s="18"/>
+        <w id="08" s="02" p="true"/>
+        <w id="09" s="23"/>
+        <w id="10" s="03"/>
+        <w id="11" s="17"/>
+        <w id="12" s="08" p="true"/>
+        <w id="13" s="20"/>
+        <w id="14" s="05"/>
+        <w id="15" s="28"/>
+        <w id="16" s="12"/>
+        <w id="17" s="15"/>
+        <w id="18" s="26" p="true"/>
+        <w id="19" s="30"/>
+        <w id="20" s="07"/>
+        <w id="21" s="21" p="true"/>
+        <w id="22" s="19"/>
+        <w id="23" s="13"/>
+        <w id="24" s="10"/>
+        <w id="25" s="27"/>
+        <w id="26" s="25"/>
+        <w id="27" s="09" p="true"/>
+        <w id="28" s="01"/>
+        <w id="29" s="14" p="true"/>
+        <w id="30" s="06"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="4" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="04" p="true"/>
+        <w id="02" s="12"/>
+        <w id="03" s="19" p="true"/>
+        <w id="04" s="29"/>
+        <w id="05" s="24"/>
+        <w id="06" s="23" p="true"/>
+        <w id="07" s="07" p="true"/>
+        <w id="08" s="30" p="true"/>
+        <w id="09" s="15"/>
+        <w id="10" s="01" p="true"/>
+        <w id="11" s="20" p="true"/>
+        <w id="12" s="14" p="true"/>
+        <w id="13" s="18" p="true"/>
+        <w id="14" s="02" p="true"/>
+        <w id="15" s="16"/>
+        <w id="16" s="27"/>
+        <w id="17" s="10"/>
+        <w id="18" s="25" p="true"/>
+        <w id="19" s="17" p="true"/>
+        <w id="20" s="28" p="true"/>
+        <w id="21" s="06" p="true"/>
+        <w id="22" s="21"/>
+        <w id="23" s="11" p="true"/>
+        <w id="24" s="08"/>
+        <w id="25" s="22" p="true"/>
+        <w id="26" s="05" p="true"/>
+        <w id="27" s="09" p="true"/>
+        <w id="28" s="03"/>
+        <w id="29" s="26" p="true"/>
+        <w id="30" s="13"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="5" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="18"/>
+        <w id="02" s="02"/>
+        <w id="03" s="15"/>
+        <w id="04" s="07"/>
+        <w id="05" s="20"/>
+        <w id="06" s="28"/>
+        <w id="07" s="08"/>
+        <w id="08" s="13"/>
+        <w id="09" s="23"/>
+        <w id="10" s="12" p="true"/>
+        <w id="11" s="19"/>
+        <w id="12" s="27"/>
+        <w id="13" s="04" p="true"/>
+        <w id="14" s="24"/>
+        <w id="15" s="10"/>
+        <w id="16" s="14"/>
+        <w id="17" s="11"/>
+        <w id="18" s="06" p="true"/>
+        <w id="19" s="30"/>
+        <w id="20" s="03"/>
+        <w id="21" s="17"/>
+        <w id="22" s="26" p="true"/>
+        <w id="23" s="22"/>
+        <w id="24" s="01" p="true"/>
+        <w id="25" s="29"/>
+        <w id="26" s="25"/>
+        <w id="27" s="16"/>
+        <w id="28" s="21"/>
+        <w id="29" s="05" p="true"/>
+        <w id="30" s="09" p="true"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="6" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="16"/>
+        <w id="02" s="04"/>
+        <w id="03" s="14" p="true"/>
+        <w id="04" s="24"/>
+        <w id="05" s="23"/>
+        <w id="06" s="19" p="true"/>
+        <w id="07" s="30" p="true"/>
+        <w id="08" s="03" p="true"/>
+        <w id="09" s="01"/>
+        <w id="10" s="08"/>
+        <w id="11" s="27"/>
+        <w id="12" s="13" p="true"/>
+        <w id="13" s="09" p="true"/>
+        <w id="14" s="05" p="true"/>
+        <w id="15" s="29"/>
+        <w id="16" s="10"/>
+        <w id="17" s="15"/>
+        <w id="18" s="26" p="true"/>
+        <w id="19" s="22" p="true"/>
+        <w id="20" s="07" p="true"/>
+        <w id="21" s="25" p="true"/>
+        <w id="22" s="17" p="true"/>
+        <w id="23" s="20"/>
+        <w id="24" s="11" p="true"/>
+        <w id="25" s="02" p="true"/>
+        <w id="26" s="06" p="true"/>
+        <w id="27" s="21"/>
+        <w id="28" s="28" p="true"/>
+        <w id="29" s="18"/>
+        <w id="30" s="12" p="true"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="7" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="26" p="true"/>
+        <w id="02" s="23" p="true"/>
+        <w id="03" s="07" p="true"/>
+        <w id="04" s="05"/>
+        <w id="05" s="13"/>
+        <w id="06" s="08"/>
+        <w id="07" s="24" p="true"/>
+        <w id="08" s="30" p="true"/>
+        <w id="09" s="29" p="true"/>
+        <w id="10" s="20"/>
+        <w id="11" s="22"/>
+        <w id="12" s="09"/>
+        <w id="13" s="12"/>
+        <w id="14" s="10"/>
+        <w id="15" s="25" p="true"/>
+        <w id="16" s="16" p="true"/>
+        <w id="17" s="03" p="true"/>
+        <w id="18" s="21"/>
+        <w id="19" s="19" p="true"/>
+        <w id="20" s="18"/>
+        <w id="21" s="04" p="true"/>
+        <w id="22" s="01" p="true"/>
+        <w id="23" s="28" p="true"/>
+        <w id="24" s="27" p="true"/>
+        <w id="25" s="06" p="true"/>
+        <w id="26" s="02" p="true"/>
+        <w id="27" s="15"/>
+        <w id="28" s="17"/>
+        <w id="29" s="11" p="true"/>
+        <w id="30" s="14"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="8" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="16"/>
+        <w id="02" s="22" p="true"/>
+        <w id="03" s="14" p="true"/>
+        <w id="04" s="30"/>
+        <w id="05" s="24"/>
+        <w id="06" s="15"/>
+        <w id="07" s="17" p="true"/>
+        <w id="08" s="20" p="true"/>
+        <w id="09" s="04"/>
+        <w id="10" s="07"/>
+        <w id="11" s="27"/>
+        <w id="12" s="12"/>
+        <w id="13" s="06"/>
+        <w id="14" s="13"/>
+        <w id="15" s="25"/>
+        <w id="16" s="21"/>
+        <w id="17" s="01"/>
+        <w id="18" s="05"/>
+        <w id="19" s="26"/>
+        <w id="20" s="08" p="true"/>
+        <w id="21" s="11"/>
+        <w id="22" s="23"/>
+        <w id="23" s="29"/>
+        <w id="24" s="28" p="true"/>
+        <w id="25" s="03"/>
+        <w id="26" s="18" p="true"/>
+        <w id="27" s="10" p="true"/>
+        <w id="28" s="19" p="true"/>
+        <w id="29" s="02" p="true"/>
+        <w id="30" s="09" p="true"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="9" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="12"/>
+        <w id="02" s="01" p="true"/>
+        <w id="03" s="17"/>
+        <w id="04" s="29"/>
+        <w id="05" s="06" p="true"/>
+        <w id="06" s="04" p="true"/>
+        <w id="07" s="07"/>
+        <w id="08" s="11"/>
+        <w id="09" s="15"/>
+        <w id="10" s="03"/>
+        <w id="11" s="21" p="true"/>
+        <w id="12" s="25"/>
+        <w id="13" s="09"/>
+        <w id="14" s="26"/>
+        <w id="15" s="30"/>
+        <w id="16" s="13"/>
+        <w id="17" s="22"/>
+        <w id="18" s="20" p="true"/>
+        <w id="19" s="10"/>
+        <w id="20" s="24"/>
+        <w id="21" s="27"/>
+        <w id="22" s="14" p="true"/>
+        <w id="23" s="28"/>
+        <w id="24" s="23"/>
+        <w id="25" s="02" p="true"/>
+        <w id="26" s="05"/>
+        <w id="27" s="19"/>
+        <w id="28" s="18"/>
+        <w id="29" s="16"/>
+        <w id="30" s="08"/>
+      </wiring>
+    </wheel>
+
+    <wheel id="10" colour="brown" text="black" alt="true">
+      <wiring>
+        <w id="01" s="09" p="true"/>
+        <w id="02" s="21" p="true"/>
+        <w id="03" s="08" p="true"/>
+        <w id="04" s="16"/>
+        <w id="05" s="25" p="true"/>
+        <w id="06" s="05" p="true"/>
+        <w id="07" s="20"/>
+        <w id="08" s="22" p="true"/>
+        <w id="09" s="04" p="true"/>
+        <w id="10" s="27" p="true"/>
+        <w id="11" s="14"/>
+        <w id="12" s="19" p="true"/>
+        <w id="13" s="01" p="true"/>
+        <w id="14" s="15" p="true"/>
+        <w id="15" s="30" p="true"/>
+        <w id="16" s="02" p="true"/>
+        <w id="17" s="10"/>
+        <w id="18" s="17" p="true"/>
+        <w id="19" s="07" p="true"/>
+        <w id="20" s="24" p="true"/>
+        <w id="21" s="12"/>
+        <w id="22" s="18" p="true"/>
+        <w id="23" s="29" p="true"/>
+        <w id="24" s="03" p="true"/>
+        <w id="25" s="23"/>
+        <w id="26" s="06" p="true"/>
+        <w id="27" s="13" p="true"/>
+        <w id="28" s="28"/>
+        <w id="29" s="26" p="true"/>
+        <w id="30" s="11" p="true"/>
+      </wiring>
+    </wheel>
+  </wheels>
+</fialka>

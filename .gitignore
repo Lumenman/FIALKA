@@ -1,0 +1,11 @@
+# крупное и восстановимое: книга качается заново, дампы — из exe
+Fialka_200.pdf
+deco/M125v5_16eng.idp
+deco/M125v5_16eng.h
+
+# сборка
+*.o
+*.ppu
+*.exe
+!deco/M125v5_16eng.exe
+__pycache__/

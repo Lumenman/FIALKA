@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!DOCTYPE crypto:fialka PUBLIC "-//XAT//Fialka Cipher 1.0//" "fialka.dtd">
+<fialka>
+
+  <config file="Default" machine="M125-3xx" wheels="6K" desc="" date="2006-01-04">
+
+    <options mode="coding" textMode="letters" numLock="false" con5="rus"/>
+
+    <wheelOrder>
+      <o pos="01" wheel="01"/>
+      <o pos="02" wheel="02"/>
+      <o pos="03" wheel="03"/>
+      <o pos="04" wheel="04"/>
+      <o pos="05" wheel="05"/>
+      <o pos="06" wheel="06"/>
+      <o pos="07" wheel="07"/>
+      <o pos="08" wheel="08"/>
+      <o pos="09" wheel="09"/>
+      <o pos="10" wheel="10"/>
+    </wheelOrder>
+
+    <ringSetting>
+      <p pos="00" offset="00"/>
+      <p pos="01" offset="00"/>
+      <p pos="02" offset="00"/>
+      <p pos="03" offset="00"/>
+      <p pos="04" offset="00"/>
+      <p pos="05" offset="00"/>
+      <p pos="06" offset="00"/>
+      <p pos="07" offset="00"/>
+      <p pos="08" offset="00"/>
+      <p pos="09" offset="00"/>
+    </ringSetting>
+
+    <coreOrder>
+      <o pos="01" core="01"/>
+      <o pos="02" core="02"/>
+      <o pos="03" core="03"/>
+      <o pos="04" core="04"/>
+      <o pos="05" core="05"/>
+      <o pos="06" core="06"/>
+      <o pos="07" core="07"/>
+      <o pos="08" core="08"/>
+      <o pos="09" core="09"/>
+      <o pos="10" core="10"/>
+    </coreOrder>
+
+    <coreSide>
+      <p pos="01" side="1"/>
+      <p pos="02" side="1"/>
+      <p pos="03" side="1"/>
+      <p pos="04" side="1"/>
+      <p pos="05" side="1"/>
+      <p pos="06" side="1"/>
+      <p pos="07" side="1"/>
+      <p pos="08" side="1"/>
+      <p pos="09" side="1"/>
+      <p pos="10" side="1"/>
+    </coreSide>
+
+    <coreSetting>
+      <p pos="01" offset="01"/>
+      <p pos="02" offset="01"/>
+      <p pos="03" offset="01"/>
+      <p pos="04" offset="01"/>
+      <p pos="05" offset="01"/>
+      <p pos="06" offset="01"/>
+      <p pos="07" offset="01"/>
+      <p pos="08" offset="01"/>
+      <p pos="09" offset="01"/>
+      <p pos="10" offset="01"/>
+    </coreSetting>
+
+    <startPosition>
+      <p pos="00" offset="00"/>
+      <p pos="01" offset="00"/>
+      <p pos="02" offset="00"/>
+      <p pos="03" offset="00"/>
+      <p pos="04" offset="00"/>
+      <p pos="05" offset="00"/>
+      <p pos="06" offset="00"/>
+      <p pos="07" offset="00"/>
+      <p pos="08" offset="00"/>
+      <p pos="09" offset="00"/>
+    </startPosition>
+  </config>
+</fialka>
