@@ -34,11 +34,15 @@ type
 
 var
   { «Железо»: машина плюс комплект дисков. }
-  Alphabet: array[TContact] of string;  { UTF-8, по знаку в элементе }
+  Alphabet: array[TContact] of string;  { нижний ряд головки, он же клавиатура }
   Upper: array[TContact] of string;     { верхний ряд печатающей головки }
+  ScriptName: string;                   { какая головка нужна машине }
+  HeadId: string;                       { id, прочитанный из файла головки }
+  HeadPath: string = '';                { -H: перебить файл головки }
   SpaceContact, ProbeEven, ProbeOdd: Integer;
   ShiftUp: Integer = 0;                 { ЦФ — регистр цифр }
   ShiftDown: Integer = 0;               { БК — регистр букв }
+  NumKeys: TWire;                       { keyboard.10: клавиши режима цифр }
   { NumLock, а не рычаг режима: 10 в режиме цифр, 30 во всех остальных
     (мануал 3.2.9). Шифр в буквенном и смешанном режимах одинаков. }
   Live: Integer = 30;
@@ -242,6 +246,39 @@ end;
 
 { ---- таблицы ------------------------------------------------------------ }
 
+{ Комментарий: ';' в начале строки или после пробела и до конца строки.
+  Правило слово в слово как у configparser эталона: иначе один и тот же файл
+  читался бы двумя реализациями по-разному, а сверка этого не поймала бы —
+  в наших файлах встроенных комментариев нет, они появятся у пользователя. }
+function StripComment(const S: string): string;
+var
+  I: Integer;
+begin
+  for I := 1 to Length(S) do
+    if (S[I] = ';') and ((I = 1) or (S[I - 1] = ' ') or (S[I - 1] = #9)) then
+      Exit(Copy(S, 1, I - 1));
+  Result := S;
+end;
+
+function IniStr(Ini: TIniFile; const Sect, Key: string): string;
+begin
+  Result := Trim(StripComment(Ini.ReadString(Sect, Key, '')));
+end;
+
+function IniInt(Ini: TIniFile; const Sect, Key: string): Integer;
+begin
+  Result := StrToIntDef(IniStr(Ini, Sect, Key), 0);
+end;
+
+{ Двух знаков в значении INI не выразить: ';' начинает комментарий, а '=' не
+  может стоять в ключе — он делит строку. Оба пишутся токеном. }
+function Unescape(const Tok: string): string;
+begin
+  if Tok = '\s' then Result := ';'
+  else if Tok = '\e' then Result := '='
+  else Result := Tok;
+end;
+
 procedure ParseWire(const S: string; out W: TWire);
 var
   L: TStringList;
@@ -258,78 +295,154 @@ begin
   end;
 end;
 
-procedure SplitAlphabet(const S: string);
-var
-  I, Count, J: Integer;
-begin
-  I := 1;
-  Count := 0;
-  while I <= Length(S) do
-  begin
-    Inc(Count);
-    if Count > N then Die('в алфавите больше %d знаков', [N]);
-    Alphabet[Count] := NextChar(S, I);
-  end;
-  if Count <> N then Die('в алфавите %d знаков, а нужно %d', [Count, N]);
-  for I := 1 to N do
-    for J := I + 1 to N do
-      if Alphabet[I] = Alphabet[J] then Die('знак %s в алфавите дважды', [Alphabet[I]]);
-end;
-
-procedure LoadMachine(const Path: string; Live: Integer);
+{ Печатающая головка: два ряда знаков на тридцати контактах. Шифра она не
+  касается — диски и рефлектор считают контакты, а знаки живут только на
+  клавиатуре и на печати. Поэтому головку меняют, не трогая машину. }
+procedure LoadHead(const Path: string);
 var
   Ini: TIniFile;
   L: TStringList;
-  I: Integer;
-  Sect, Tok: string;
+  I, J, C, Digits: Integer;
+  Tok: string;
 begin
-  if not FileExists(Path) then Die('нет файла машины: %s', [Path]);
+  if not FileExists(Path) then Die('нет файла головки: %s', [Path]);
   Ini := TIniFile.Create(Path);
   try
-    SplitAlphabet(Trim(Ini.ReadString('machine', 'alphabet', '')));
-    SpaceContact := Ini.ReadInteger('machine', 'space_contact', 0);
-    ProbeEven := Ini.ReadInteger('machine', 'probe_even', 0);
-    ProbeOdd := Ini.ReadInteger('machine', 'probe_odd', 0);
-    if (SpaceContact < 1) or (SpaceContact > N) then Die('space_contact вне 1..%d', [N]);
-
-    ParseWire(Ini.ReadString('entry', 'wiring', ''), Entry);
-    Invert(Entry, EntryInv);
-    ParseWire(Ini.ReadString('card', 'builtin', ''), CardBuiltin);
-
-    { Верхний ряд головки: цифры, пунктуация и Ъ, Э, Й. ЦФ и БК — служебные:
-      через шифратор проходят как обычные знаки, но не печатаются. }
-    L := RawTokens(Ini.ReadString('print', 'upper', ''));
+    HeadId := IniStr(Ini, 'head', 'id');
+    { Оба ряда читаются одинаково: токен на контакт, разделитель — пробел.
+      Знак может быть и многобайтным, и составным (буква плюс диакритика). }
+    L := RawTokens(IniStr(Ini, 'head', 'lower'));
+    try
+      if L.Count <> N then
+        Die('в нижнем ряду головки %d знаков, а нужно %d', [L.Count, N]);
+      for I := 1 to N do
+      begin
+        if L[I - 1] = '~' then
+          Die('контакт %d нижнего ряда пуст, а пустым он быть не может: '
+              + 'шифртекст печатается буквами этого ряда', [I]);
+        Alphabet[I] := Unescape(L[I - 1]);
+      end;
+    finally
+      L.Free;
+    end;
+    L := RawTokens(IniStr(Ini, 'head', 'upper'));
     try
       if L.Count <> N then
         Die('в верхнем ряду головки %d знаков, а нужно %d', [L.Count, N]);
       for I := 1 to N do
       begin
         Tok := L[I - 1];
-        if Tok = '~' then Tok := ''
-        else if Tok = '\s' then Tok := ';';    { ';' съедает формат INI }
+        if Tok = '~' then Tok := '' else Tok := Unescape(Tok);
         Upper[I] := Tok;
       end;
     finally
       L.Free;
     end;
-    ShiftUp := Ini.ReadInteger('print', 'shift_up', 0);
-    ShiftDown := Ini.ReadInteger('print', 'shift_down', 0);
+  finally
+    Ini.Free;
+  end;
+
+  for I := 1 to N do
+    for J := I + 1 to N do
+    begin
+      if Alphabet[I] = Alphabet[J] then
+        Die('знак %s в нижнем ряду головки дважды', [Alphabet[I]]);
+      if (Upper[I] <> '') and (Upper[I] = Upper[J]) then
+        Die('знак %s в верхнем ряду головки дважды', [Upper[I]]);
+    end;
+
+  { Клавиши ЦФ, БК и пробела заняты служебным, и стоявшие на них буквы обязаны
+    найтись в верхнем ряду — иначе набрать их будет нечем (мануал 3.2.10).
+    В остальных местах знак сразу в двух рядах — ошибка: до верхнего ряда
+    очередь не дойдёт, и половина головки окажется мёртвой. }
+  for I := 1 to N do
+  begin
+    C := UpperContact(Alphabet[I]);
+    if (I = SpaceContact) or (I = ShiftUp) or (I = ShiftDown) then
+    begin
+      if C = 0 then
+        Die('буква %s стоит на служебном контакте %d, а в верхнем ряду её нет',
+            [Alphabet[I], I]);
+    end
+    else if C <> 0 then
+      Die('знак %s есть в обоих рядах головки: контакты %d и %d',
+          [Alphabet[I], I, C]);
+  end;
+
+  { Режим цифр отпирает десять клавиш, и какие именно — проводка машины, а не
+    головки. Цифры верхнего ряда обязаны стоять ровно на них. }
+  Digits := 0;
+  for I := 1 to N do
+  begin
+    Tok := Upper[I];
+    if (Length(Tok) = 1) and (Tok[1] >= '0') and (Tok[1] <= '9') then
+    begin
+      Inc(Digits);
+      if NumKeys[I] = 0 then
+        Die('цифра %s стоит на контакте %d, а в режиме цифр он мёртв', [Tok, I]);
+    end;
+  end;
+  if Digits <> 10 then
+    Die('в верхнем ряду головки %d цифр, а нужно десять', [Digits]);
+end;
+
+procedure LoadMachine(const Path: string; Live: Integer);
+var
+  Ini: TIniFile;
+  Sect, Head: string;
+begin
+  if not FileExists(Path) then Die('нет файла машины: %s', [Path]);
+  Ini := TIniFile.Create(Path);
+  try
+    ScriptName := IniStr(Ini, 'machine', 'script');
+    SpaceContact := IniInt(Ini, 'machine', 'space_contact');
+    ProbeEven := IniInt(Ini, 'machine', 'probe_even');
+    ProbeOdd := IniInt(Ini, 'machine', 'probe_odd');
+    { ЦФ и БК — клавиши, а не знаки: их контакты заданы проводкой машины,
+      а какие буквы они вытеснили, зависит от головки. }
+    ShiftUp := IniInt(Ini, 'machine', 'shift_up');
+    ShiftDown := IniInt(Ini, 'machine', 'shift_down');
+    if (SpaceContact < 1) or (SpaceContact > N) then Die('space_contact вне 1..%d', [N]);
     if (ShiftUp < 1) or (ShiftUp > N) or (ShiftDown < 1) or (ShiftDown > N) then
       Die('shift_up и shift_down должны быть контактами 1..%d', [N]);
+    if (ShiftUp = ShiftDown) or (ShiftUp = SpaceContact)
+       or (ShiftDown = SpaceContact) then
+      Die('ЦФ, БК и пробел не могут сидеть на одном контакте', []);
+
+    ParseWire(IniStr(Ini, 'entry', 'wiring'), Entry);
+    Invert(Entry, EntryInv);
+    ParseWire(IniStr(Ini, 'card', 'builtin'), CardBuiltin);
+
+    { нужна всегда, а не только в режиме цифр: по ней проверяется головка }
+    if not Ini.SectionExists('keyboard.10') then
+      Die('в машине нет секции [keyboard.10]', []);
+    ParseWire(IniStr(Ini, 'keyboard.10', 'wiring'), NumKeys);
 
     Sect := Format('keyboard.%d', [Live]);
     if not Ini.SectionExists(Sect) then Die('в машине нет секции [%s]', [Sect]);
-    ParseWire(Ini.ReadString(Sect, 'wiring', ''), Keyboard);
+    ParseWire(IniStr(Ini, Sect, 'wiring'), Keyboard);
     Invert(Keyboard, KeyboardInv);
 
     Sect := Format('reflector.%d', [Live]);
     if not Ini.SectionExists(Sect) then Die('в машине нет секции [%s]', [Sect]);
-    ParseWire(Ini.ReadString(Sect, 'coding', ''), Coding);
-    ParseWire(Ini.ReadString(Sect, 'decoding', ''), Decoding);
-    ParseWire(Ini.ReadString(Sect, 'alt_coding', ''), AltCoding);
-    ParseWire(Ini.ReadString(Sect, 'alt_decoding', ''), AltDecoding);
+    ParseWire(IniStr(Ini, Sect, 'coding'), Coding);
+    ParseWire(IniStr(Ini, Sect, 'decoding'), Decoding);
+    ParseWire(IniStr(Ini, Sect, 'alt_coding'), AltCoding);
+    ParseWire(IniStr(Ini, Sect, 'alt_decoding'), AltDecoding);
   finally
     Ini.Free;
+  end;
+
+  if HeadPath <> '' then LoadHead(HeadPath)
+  else
+  begin
+    if ScriptName = '' then
+      Die('в машине нет "script = ", а головка не задана ключом -H', []);
+    Head := ExtractFilePath(Path) + Format('head-%s.ini', [ScriptName]);
+    LoadHead(Head);
+    { переименованный файл не должен молча оказаться другой головкой }
+    if HeadId <> ScriptName then
+      Die('головка %s лежит в файле с id %s', [ScriptName, HeadId]);
   end;
 end;
 
@@ -343,10 +456,10 @@ begin
   if not FileExists(Path) then Die('нет файла комплекта: %s', [Path]);
   Ini := TIniFile.Create(Path);
   try
-    WheelSet := Trim(Ini.ReadString('set', 'id', ''));
+    WheelSet := IniStr(Ini, 'set', 'id');
     for I := 1 to SLOTS do
     begin
-      ParseWire(Ini.ReadString(Format('wheel%d', [I]), 'wiring', ''), Wiring[I]);
+      ParseWire(IniStr(Ini, Format('wheel%d', [I]), 'wiring'), Wiring[I]);
       Seen := [];
       for J := 1 to N do
       begin
@@ -358,7 +471,7 @@ begin
       Invert(Wiring[I], WiringInv[I]);
 
       Pins[I] := [];
-      L := Tokens(Ini.ReadString(Format('wheel%d', [I]), 'pins', ''));
+      L := Tokens(IniStr(Ini, Format('wheel%d', [I]), 'pins'));
       try
         for J := 0 to L.Count - 1 do
         begin
@@ -396,8 +509,10 @@ begin
     for I := 0 to L.Count - 1 do
     begin
       P := Pos('=', L[I]);
-      PrepFrom[I] := UpFold(Trim(Copy(L[I], 1, P - 1)));
-      PrepTo[I] := UpFold(Trim(Copy(L[I], P + 1, MaxInt)));
+      { ';' и '=' в ключе не выразить, поэтому здесь те же токены, что и на
+        головке: '\s' — точка с запятой, '\e' — знак равенства. }
+      PrepFrom[I] := UpFold(Unescape(Trim(Copy(L[I], 1, P - 1))));
+      PrepTo[I] := UpFold(Unescape(Trim(StripComment(Copy(L[I], P + 1, MaxInt)))));
     end;
   finally
     L.Free;
@@ -1207,6 +1322,22 @@ begin
   Result := Format('OK — векторов %d, оба направления', [Count]);
 end;
 
+{ 6. Сменная головка: те же диски и тот же шифр, другие знаки на контактах.
+     Гоняем по ней ту же проверку обратимости, что и по штатной. }
+function TestHead(const MachinePath, Path: string): string;
+begin
+  if not FileExists(Path) then
+    Exit('пропущена (нет ' + ExtractFileName(Path) + ')');
+  HeadPath := Path;
+  try
+    Result := TestModes(MachinePath, 10);
+    if Result = '' then Result := Format('OK — головка %s, оба ряда', [HeadId]);
+  finally
+    HeadPath := '';
+    LoadMachine(MachinePath, 30);
+  end;
+end;
+
 { ---- консольный интерфейс ----------------------------------------------- }
 
 function Near(const Name: string): string;
@@ -1228,6 +1359,7 @@ begin
   WriteLn('                  смешанный (цифры и знаки через ЦФ/БК), только цифры');
   WriteLn('  -M, --machine   файл машины (по умолчанию ../data/machine-M125-3.ini)');
   WriteLn('  -w, --wheels    перебить комплект, заданный в ключе');
+  WriteLn('  -H, --head      перебить головку, заданную строкой script машины');
   WriteLn('  -o ФАЙЛ         выходной файл (иначе stdout)');
   WriteLn('  --log ФАЙЛ      подробная трасса: позиции, щупы, круги, шаг');
   WriteLn('  --prepare       подготовить текст по data/prepare.ini, с отчётом');
@@ -1286,6 +1418,7 @@ begin
     else if (A = '-k') or (A = '--key') then KeyPath := NextArg(I)
     else if (A = '-M') or (A = '--machine') then MachinePath := NextArg(I)
     else if (A = '-w') or (A = '--wheels') then WheelsPath := NextArg(I)
+    else if (A = '-H') or (A = '--head') then HeadPath := NextArg(I)
     else if A = '--pos' then PosArg := ArgToUtf8(NextArg(I))
     else if A = '--mode' then
     begin
@@ -1317,10 +1450,10 @@ end;
 
 procedure RunSelfTest;
 var
-  Bad, Vec: string;
+  Bad, Vec, Head: string;
 begin
   LoadWheels(ExtractFilePath(MachinePath) + 'wheels-6K.ini');
-  WriteLn('комплект дисков: ', WheelSet);
+  WriteLn('комплект дисков: ', WheelSet, ', головка: ', HeadId);
 
   RandSeed := 20260817;
   Bad := TestPlain(200);
@@ -1339,8 +1472,13 @@ begin
                      Near('demo' + DirectorySeparator + 'vectors.txt'));
   WriteLn('векторы с оригинала: ', Vec);
 
+  Head := TestHead(MachinePath,
+                   ExtractFilePath(MachinePath) + 'head-latin.ini');
+  WriteLn('сменная головка: ', Head);
+
   if (Bad <> '') or ((Err <> '') and (Pos('пропущена', Err) = 0))
-     or (Pos('РАСХОЖДЕНИЕ', Vec) > 0) then Halt(1);
+     or (Pos('РАСХОЖДЕНИЕ', Vec) > 0)
+     or ((Pos('OK', Head) = 0) and (Pos('пропущена', Head) = 0)) then Halt(1);
 end;
 
 var
@@ -1358,6 +1496,7 @@ begin
   SetTextCodePage(Input, DefaultSystemCodePage);
   MachinePath := Near('data' + DirectorySeparator + 'machine-M125-3.ini');
   WheelsPath := '';
+  HeadPath := '';
   KeyPath := '';
   PosArg := '';
   OutPath := '';

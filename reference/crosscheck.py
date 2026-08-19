@@ -18,6 +18,9 @@ import fialka
 EXE = os.path.join(fialka.ROOT, 'pascal', 'fialka.exe')
 KEYS = ('3K', '5K', '6K')
 TEXT_MODES = ('L', 'M', 'N', 'L')       # рычаг Б/С/Ц
+# Раз в пять кругов машина идёт с латинской головкой: шифр тот же, знаки на
+# контактах другие, и обе реализации обязаны прочитать их одинаково.
+LATIN = os.path.join(fialka.ROOT, 'data', 'head-latin.ini')
 
 
 def pool_for(tables, text_mode, mode):
@@ -28,13 +31,13 @@ def pool_for(tables, text_mode, mode):
     одинаково собрать из них регистр.
     """
     if text_mode == 'N':
-        return ''.join(sorted(tables.digits))
+        return sorted(tables.digits)
     if mode == 'decoding':
-        return tables.alphabet
+        return list(tables.alphabet)
     chars = [ch for ch in tables.alphabet if tables.typable(ch, text_mode)] + [' ']
     if text_mode == 'M':
         chars += sorted(tables.upper_index)
-    return ''.join(chars)
+    return chars
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,6 +76,8 @@ def check_prepare():
         ('Й в открытом тексте', [], 'ЙОД'),
         ('цифра', ['--prepare'], 'ДОМ 7'),
         ('знака нет в таблице', ['--prepare'], 'ПРИВЕТ!'),
+        # ';' и '=' записаны в таблице токенами, раскрытие сверяется тоже
+        ('точка с запятой и равно', ['--prepare'], 'ИТОГ; А=Б'),
         ('подготовка на шифртексте', ['-d', '--prepare'], 'ФСИЮ'),
         # в смешанном цифры и пунктуация набираются, а Ё по-прежнему нет
         ('смешанный без подготовки', ['--mode', 'M'], 'ДОМ 7, ЪЭЙ'),
@@ -110,14 +115,18 @@ def main():
             # режим цифр гоняет возвратный контур: при 30 живых контактах у
             # рефлектора нет мёртвых и он вообще не срабатывает
             text_mode = TEXT_MODES[i % len(TEXT_MODES)]
+            head = LATIN if i % 5 == 3 else None
+            head_args = ['-H', head] if head else []
             tables = fialka.Tables(fialka.MACHINE,
-                                   os.path.join(fialka.ROOT, 'data', 'wheels-%s.ini' % wheel_set))
+                                   os.path.join(fialka.ROOT, 'data', 'wheels-%s.ini' % wheel_set),
+                                   head)
             # ключи генерируются то одной реализацией, то другой: так каждый
             # разбор читает чужой вывод, а не только свой собственный
             if (i // 2) % 2:      # не i % 2: иначе генератор был бы намертво
                                   # связан с режимом и половина сочетаний выпала
-                card = run_pascal(['--genkey', '--set', wheel_set, '--seed', str(i)], '')
-                pos = run_pascal(['--genpos', '--seed', str(i)], '')
+                card = run_pascal(['--genkey', '--set', wheel_set,
+                                   '--seed', str(i)] + head_args, '')
+                pos = run_pascal(['--genpos', '--seed', str(i)] + head_args, '')
             else:
                 card = fialka.gen_card(tables, wheel_set)
                 pos = fialka.gen_positions(tables.alphabet)
@@ -127,15 +136,16 @@ def main():
             text = ''.join(random.choice(pool_for(tables, text_mode, mode))
                            for _ in range(60))
 
-            _, key = fialka.load(fialka.MACHINE, tmp, mode=mode,
+            _, key = fialka.load(fialka.MACHINE, tmp, head_path=head, mode=mode,
                                  text_mode=text_mode, position=pos)
             want = fialka.Machine(tables, key).process(text)
             got = run_pascal(['-d' if mode == 'decoding' else '-e', '-k', tmp,
-                              '--pos', pos, '--mode', text_mode], text)
+                              '--pos', pos, '--mode', text_mode] + head_args, text)
             if got != want:
                 bad += 1
-                print('РАСХОЖДЕНИЕ %s %s %s\n  вход:    %s\n  оракул:  %s\n  паскаль: %s'
-                      % (wheel_set, mode, text_mode, text, want, got))
+                print('РАСХОЖДЕНИЕ %s %s %s (головка %s)\n  вход:    %s'
+                      '\n  оракул:  %s\n  паскаль: %s'
+                      % (wheel_set, mode, text_mode, tables.head_id, text, want, got))
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)

@@ -38,6 +38,15 @@ def invert(table):
     return out
 
 
+# Двух знаков в значении INI не выразить: ';' начинает комментарий, а '='
+# не может стоять в ключе — он делит строку. Оба пишутся токеном.
+ESCAPES = {'\\s': ';', '\\e': '='}
+
+
+def unescape(token):
+    return ESCAPES.get(token, token)
+
+
 def _row(text):
     """Строка INI -> 1-базовый список. Пустая строка -> все нули."""
     values = [int(v) for v in text.split()] if text.strip() else [0] * N
@@ -47,16 +56,20 @@ def _row(text):
 class Tables:
     """Неизменное «железо»: машина плюс комплект дисков."""
 
-    def __init__(self, machine_ini, wheels_ini):
+    def __init__(self, machine_ini, wheels_ini, head_ini=None):
         # interpolation=None: в верхнем ряду головки есть знак '%'
         m = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
         m.read(machine_ini, encoding='utf-8')
-        self.alphabet = m['machine']['alphabet'].strip()
+        self.script = m['machine'].get('script', '').strip()
         self.space_contact = int(m['machine']['space_contact'])
         self.probe_even = int(m['machine']['probe_even'])
         self.probe_odd = int(m['machine']['probe_odd'])
-        if len(self.alphabet) != N or len(set(self.alphabet)) != N:
-            raise ValueError('алфавит должен содержать %d различных знаков' % N)
+        # ЦФ и БК — клавиши, а не знаки: их контакты задаёт проводка машины,
+        # а какие буквы они вытеснили, зависит от головки.
+        self.shift_up = int(m['machine']['shift_up'])
+        self.shift_down = int(m['machine']['shift_down'])
+        if len({self.shift_up, self.shift_down, self.space_contact}) != 3:
+            raise ValueError('ЦФ, БК и пробел не могут сидеть на одном контакте')
 
         self.entry = _row(m['entry']['wiring'])
         self.entry_inv = invert(self.entry)
@@ -73,20 +86,10 @@ class Tables:
                 'alt_decoding': _row(m[k]['alt_decoding']),
             }
 
-        # Верхний ряд печатающей головки: цифры, пунктуация и Ъ, Э, Й.
-        # ЦФ (контакт 20) и БК (контакт 7) — переключатели регистра, они
-        # проходят через шифратор как обычные знаки, но не печатаются.
-        self.shift_up = int(m['print']['shift_up'])
-        self.shift_down = int(m['print']['shift_down'])
-        self.upper = [''] + [{'~': '', '\\s': ';'}.get(t, t)
-                             for t in m['print']['upper'].split()]
-        if len(self.upper) != N + 1:
-            raise ValueError('в верхнем ряду головки должно быть %d знаков' % N)
-        self.upper_index = {g: i for i, g in enumerate(self.upper)
-                            if i and g and i not in (self.shift_up, self.shift_down)}
-        self.digits = {g: i for g, i in self.upper_index.items() if g.isdigit()}
-        if len(self.digits) != 10:
-            raise ValueError('в верхнем ряду должно быть десять цифр')
+        # Головка называется строкой script машины; -H подставляет любую.
+        self.load_head(head_ini or os.path.join(os.path.dirname(machine_ini),
+                                                'head-%s.ini' % self.script),
+                       check_id=head_ini is None)
 
         w = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
         w.read(wheels_ini, encoding='utf-8')
@@ -102,6 +105,71 @@ class Tables:
             self.wiring.append(wiring)
             self.wiring_inv.append(invert(wiring))
             self.pins.append(pins)
+
+    # ---- печатающая головка -------------------------------------------------
+    def load_head(self, path, check_id=False):
+        """Два ряда знаков на тридцати контактах.
+
+        Шифра головка не касается: диски и рефлектор считают контакты, а знаки
+        живут только на клавиатуре и на печати. Поэтому её можно менять, не
+        трогая машину.
+        """
+        h = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
+        h.read(path, encoding='utf-8')
+        if 'head' not in h:
+            raise ValueError('нет файла головки: %s' % path)
+        self.head_id = h['head']['id'].strip()
+        # переименованный файл не должен молча оказаться другой головкой
+        if check_id and self.head_id != self.script:
+            raise ValueError('головка %s лежит в файле с id %s'
+                             % (self.script, self.head_id))
+
+        # Оба ряда читаются одинаково: токен на контакт, разделитель — пробел.
+        # Знак может быть и многобайтным, и составным (буква плюс диакритика).
+        self.alphabet = [unescape(t) for t in h['head']['lower'].split()]
+        if len(self.alphabet) != N:
+            raise ValueError('в нижнем ряду головки %d знаков, а нужно %d'
+                             % (len(self.alphabet), N))
+        for i, g in enumerate(self.alphabet, 1):
+            if g == '~':
+                raise ValueError('контакт %d нижнего ряда пуст, а пустым он быть не '
+                                 'может: шифртекст печатается буквами этого ряда' % i)
+            if g in self.alphabet[i:]:
+                raise ValueError('знак %s в нижнем ряду головки дважды' % g)
+        self.upper = [''] + ['' if t == '~' else unescape(t)
+                             for t in h['head']['upper'].split()]
+        if len(self.upper) != N + 1:
+            raise ValueError('в верхнем ряду головки %d знаков, а нужно %d'
+                             % (len(self.upper) - 1, N))
+        for i, g in enumerate(self.upper[1:], 1):
+            if g and g in self.upper[i + 1:]:
+                raise ValueError('знак %s в верхнем ряду головки дважды' % g)
+        self.upper_index = {g: i for i, g in enumerate(self.upper)
+                            if i and g and i not in (self.shift_up, self.shift_down)}
+
+        # Клавиши ЦФ, БК и пробела заняты служебным, и стоявшие на них буквы
+        # обязаны найтись в верхнем ряду — иначе набрать их будет нечем
+        # (мануал 3.2.10). В остальных местах знак сразу в двух рядах — ошибка:
+        # до верхнего ряда очередь не дойдёт.
+        served = (self.space_contact, self.shift_up, self.shift_down)
+        for i, g in enumerate(self.alphabet, 1):
+            if i in served:
+                if g not in self.upper_index:
+                    raise ValueError('буква %s стоит на служебном контакте %d, '
+                                     'а в верхнем ряду её нет' % (g, i))
+            elif g in self.upper_index:
+                raise ValueError('знак %s есть в обоих рядах головки: контакты %d и %d'
+                                 % (g, i, self.upper_index[g]))
+
+        # Режим цифр отпирает десять клавиш, и какие именно — проводка машины,
+        # а не головки. Цифры верхнего ряда обязаны стоять ровно на них.
+        self.digits = {g: i for g, i in self.upper_index.items() if g.isdigit()}
+        if len(self.digits) != 10:
+            raise ValueError('в верхнем ряду должно быть десять цифр')
+        for g, i in sorted(self.digits.items()):
+            if not self.keyboard[10][i]:
+                raise ValueError('цифра %s стоит на контакте %d, '
+                                 'а в режиме цифр он мёртв' % (g, i))
 
     def index(self, ch, decoding, num=0):
         """Знак -> номер контакта. Пробел делит контакт с последней буквой."""
@@ -266,11 +334,13 @@ def prepare(text, tables, path=PREPARE, report=None, text_mode='L'):
     """
     # delimiters: у FPC разделитель только '=', и двоеточие обязано быть
     # обычным ключом. optionxform: иначе ключи-буквы уедут в нижний регистр.
-    cfg = configparser.ConfigParser(delimiters=('=',))
+    cfg = configparser.ConfigParser(delimiters=('=',), inline_comment_prefixes=(';',))
     cfg.optionxform = str
     if not cfg.read(path, encoding='utf-8'):
         raise ValueError('нет таблицы подготовки: %s' % path)
-    table = {k.upper(): v.upper() for k, v in cfg['replace'].items()}
+    # escape раскрывается до приведения регистра: иначе '\\s' стало бы '\\S'
+    table = {unescape(k).upper(): unescape(v).upper()
+             for k, v in cfg['replace'].items()}
     out, num = [], 0
     for ch in text.upper():
         if ch not in '\r\n':
@@ -287,7 +357,7 @@ def prepare(text, tables, path=PREPARE, report=None, text_mode='L'):
     return ''.join(out)
 
 
-def load(machine_path, key_path, wheels_path=None, **kw):
+def load(machine_path, key_path, wheels_path=None, head_path=None, **kw):
     """Собрать таблицы и ключ. Комплект берётся из ключа, если не задан явно."""
     head, rows = read_card(key_path)
     if wheels_path is None:
@@ -295,13 +365,13 @@ def load(machine_path, key_path, wheels_path=None, **kw):
             raise ValueError('в ключе нет "set = ", а комплект не задан явно')
         wheels_path = os.path.join(os.path.dirname(machine_path),
                                    'wheels-%s.ini' % head['set'])
-        tables = Tables(machine_path, wheels_path)
+        tables = Tables(machine_path, wheels_path, head_path)
         # переименованный файл не должен молча оказаться другим комплектом
         if tables.wheel_set != head['set']:
             raise ValueError('комплект %s лежит в файле с id %s'
                              % (head['set'], tables.wheel_set))
     else:
-        tables = Tables(machine_path, wheels_path)
+        tables = Tables(machine_path, wheels_path, head_path)
     return tables, Key(head, rows, tables, **kw)
 
 
@@ -570,7 +640,8 @@ def selftest(tables, rounds=200):
                 return 'plain не сквозной: %d -> %d' % (c, got)
     # Й набрать нельзя — её клавиша занята пробелом, поэтому в открытом
     # тексте она заранее заменяется на И (см. мануал, гл. 4.5).
-    typable = tables.alphabet.replace(tables.alphabet[tables.space_contact - 1], '') + ' '
+    typable = [g for i, g in enumerate(tables.alphabet, 1)
+               if i != tables.space_contact] + [' ']
     for _ in range(rounds // 4):
         key = _random_key(tables, 'coding')
         msg = ''.join(random.choice(typable) for _ in range(40))
@@ -671,6 +742,7 @@ def main():
     ap = argparse.ArgumentParser(description='Эталонная модель Фиалки М-125')
     ap.add_argument('--machine', default=MACHINE)
     ap.add_argument('--wheels', help='перебить комплект, заданный в ключе')
+    ap.add_argument('--head', help='перебить головку, заданную строкой script')
     ap.add_argument('--key', help='ключ дня (карта)')
     ap.add_argument('--pos', help='ключ сообщения: 10 букв начальной установки')
     ap.add_argument('--mode', dest='text_mode', default='L', type=text_mode_arg,
@@ -700,30 +772,41 @@ def main():
     if args.genkey or args.genpos:
         wheels = args.wheels or os.path.join(os.path.dirname(args.machine),
                                              'wheels-%s.ini' % args.set)
-        tables = Tables(args.machine, wheels)
+        tables = Tables(args.machine, wheels, args.head)
         sys.stdout.write(gen_positions(tables.alphabet) + '\n' if args.genpos
                          else gen_card(tables, tables.wheel_set))
         return 0
 
     if args.selftest:
-        tables = Tables(args.machine, args.wheels or
-                        os.path.join(os.path.dirname(args.machine), 'wheels-6K.ini'))
-        print('комплект дисков:', tables.wheel_set)
+        wheels = args.wheels or os.path.join(os.path.dirname(args.machine),
+                                             'wheels-6K.ini')
+        tables = Tables(args.machine, wheels, args.head)
+        print('комплект дисков: %s, головка: %s' % (tables.wheel_set, tables.head_id))
         structural = selftest(tables)
         print('структурные проверки:', 'ПРОВАЛ — ' + structural if structural else 'OK')
         demo = verify_demo()
         print('сверка с demo/:', demo if demo else 'OK — знак в знак')
         vectors = verify_vectors()
         print('векторы с оригинала:', vectors)
+        # сменная головка: тот же шифр, другие знаки на контактах
+        latin = os.path.join(os.path.dirname(args.machine), 'head-latin.ini')
+        if not os.path.exists(latin):
+            head = 'пропущена (нет head-latin.ini)'
+        else:
+            other = Tables(args.machine, wheels, latin)
+            head = selftest(other)
+            head = 'ПРОВАЛ — ' + head if head else 'OK — головка %s, оба ряда' % other.head_id
+        print('сменная головка:', head)
         return 1 if (structural or (demo and 'пропущена' not in demo)
-                     or vectors.startswith('РАСХОЖДЕНИЕ')) else 0
+                     or vectors.startswith('РАСХОЖДЕНИЕ')
+                     or head.startswith('ПРОВАЛ')) else 0
 
     if not args.key:
         ap.error('нужен --key, --genkey, --genpos или --selftest')
     if args.prepare and args.mode == 'decoding':
         # на шифртексте подготовка подменила бы Й и испортила его
         ap.error('--prepare применяется только к открытому тексту')
-    tables, key = load(args.machine, args.key, args.wheels,
+    tables, key = load(args.machine, args.key, args.wheels, args.head,
                        mode=args.mode, text_mode=args.text_mode, position=args.pos)
     text = open(args.src, encoding='utf-8').read() if args.src else sys.stdin.read()
     # без .strip(): пробел — знак машины, переводы строк process пропускает сам
