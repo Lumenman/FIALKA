@@ -38,6 +38,7 @@ var
   Upper: array[TContact] of string;     { верхний ряд печатающей головки }
   ScriptName: string;                   { какая головка нужна машине }
   HeadId: string;                       { id, прочитанный из файла головки }
+  DeadDigits: string;                   { цифры головки на мёртвых в режиме Ц клавишах }
   HeadPath: string = '';                { -H: перебить файл головки }
   SpaceContact, ProbeEven, ProbeOdd: Integer;
   ShiftUp: Integer = 0;                 { ЦФ — регистр цифр }
@@ -353,33 +354,32 @@ begin
 
   { Клавиши ЦФ, БК и пробела заняты служебным, и стоявшие на них буквы обязаны
     найтись в верхнем ряду — иначе набрать их будет нечем (мануал 3.2.10).
-    В остальных местах знак сразу в двух рядах — ошибка: до верхнего ряда
-    очередь не дойдёт, и половина головки окажется мёртвой. }
+    Знак сразу в двух рядах ошибкой не считается: до верхнего ряда очередь не
+    дойдёт, зато на латинских головках так и сделано — цифра 8 стоит и в
+    нижнем ряду, и в верхнем. }
   for I := 1 to N do
-  begin
-    C := UpperContact(Alphabet[I]);
     if (I = SpaceContact) or (I = ShiftUp) or (I = ShiftDown) then
     begin
+      C := UpperContact(Alphabet[I]);
       if C = 0 then
         Die('буква %s стоит на служебном контакте %d, а в верхнем ряду её нет',
             [Alphabet[I], I]);
-    end
-    else if C <> 0 then
-      Die('знак %s есть в обоих рядах головки: контакты %d и %d',
-          [Alphabet[I], I, C]);
-  end;
+    end;
 
-  { Режим цифр отпирает десять клавиш, и какие именно — проводка машины, а не
-    головки. Цифры верхнего ряда обязаны стоять ровно на них. }
+  { Режим цифр отпирает десять клавиш, и какие именно — проводка машины
+    (keyboard.10 и парная ей alt_decoding), а не головка. Совпадут ли они с
+    цифрами верхнего ряда — свойство пары «машина плюс головка»: на
+    кириллической совпадают, на латинских нет. Поэтому здесь только счёт, а
+    отказ — при входе в режим цифр, см. LoadMachine. }
   Digits := 0;
+  DeadDigits := '';
   for I := 1 to N do
   begin
     Tok := Upper[I];
     if (Length(Tok) = 1) and (Tok[1] >= '0') and (Tok[1] <= '9') then
     begin
       Inc(Digits);
-      if NumKeys[I] = 0 then
-        Die('цифра %s стоит на контакте %d, а в режиме цифр он мёртв', [Tok, I]);
+      if NumKeys[I] = 0 then DeadDigits := DeadDigits + Tok + ' ';
     end;
   end;
   if Digits <> 10 then
@@ -444,6 +444,11 @@ begin
     if HeadId <> ScriptName then
       Die('головка %s лежит в файле с id %s', [ScriptName, HeadId]);
   end;
+
+  if (Live = 10) and (DeadDigits <> '') then
+    Die('головка %s: в режиме цифр клавиши цифр %sмертвы — какие десять клавиш '
+        + 'отпираются, задаёт проводка машины, а не головка',
+        [HeadId, DeadDigits]);
 end;
 
 procedure LoadWheels(const Path: string);
@@ -1075,12 +1080,19 @@ begin
   Invert(Card, CardInv);
 end;
 
-{ Ряд карты: две группы по пять, как в книгах ключей. }
+{ Ряд карты: две группы по пять, как в книгах ключей.
+
+  Головку, у которой в нижнем ряду есть цифры (латинские все такие: 26 букв на
+  тридцать контактов, четыре лишних отданы цифрам), буквами записать нельзя —
+  '5' на карте не отличить от числа 5. Такой ключ печатается числами. }
 function FmtRow(const R: TRow; AsLetters: Boolean): string;
 var
   I: Integer;
   Left, Right, V: string;
 begin
+  for I := 1 to N do
+    if (Length(Alphabet[I]) = 1) and (Alphabet[I][1] >= '0')
+       and (Alphabet[I][1] <= '9') then AsLetters := False;
   Left := '';
   Right := '';
   for I := 1 to SLOTS do
@@ -1218,6 +1230,9 @@ begin
   Result := '';
   for TM := tmMixed to tmNumbers do
   begin
+    { латинские головки в режим цифр не умеют: их цифры стоят не на тех
+      клавишах, которые отпирает keyboard.10 }
+    if (TM = tmNumbers) and (DeadDigits <> '') then Continue;
     TextMode := TM;
     if TM = tmNumbers then Live := 10 else Live := 30;
     if TM = tmNumbers then Name := 'цифр' else Name := 'смешанном';
@@ -1473,7 +1488,7 @@ begin
   WriteLn('векторы с оригинала: ', Vec);
 
   Head := TestHead(MachinePath,
-                   ExtractFilePath(MachinePath) + 'head-latin.ini');
+                   ExtractFilePath(MachinePath) + 'head-poland.ini');
   WriteLn('сменная головка: ', Head);
 
   if (Bad <> '') or ((Err <> '') and (Pos('пропущена', Err) = 0))

@@ -19,8 +19,10 @@ EXE = os.path.join(fialka.ROOT, 'pascal', 'fialka.exe')
 KEYS = ('3K', '5K', '6K')
 TEXT_MODES = ('L', 'M', 'N', 'L')       # рычаг Б/С/Ц
 # Раз в пять кругов машина идёт с латинской головкой: шифр тот же, знаки на
-# контактах другие, и обе реализации обязаны прочитать их одинаково.
-LATIN = os.path.join(fialka.ROOT, 'data', 'head-latin.ini')
+# контактах другие, и обе реализации обязаны прочитать их одинаково. Режим
+# цифр с ней не берётся: десять клавиш отпирает проводка машины, а цифры
+# латинской головки стоят не на них, см. data/head-poland.ini.
+LATIN = os.path.join(fialka.ROOT, 'data', 'head-poland.ini')
 
 
 def pool_for(tables, text_mode, mode):
@@ -115,7 +117,7 @@ def main():
             # режим цифр гоняет возвратный контур: при 30 живых контактах у
             # рефлектора нет мёртвых и он вообще не срабатывает
             text_mode = TEXT_MODES[i % len(TEXT_MODES)]
-            head = LATIN if i % 5 == 3 else None
+            head = LATIN if (i % 5 == 3 and text_mode != 'N') else None
             head_args = ['-H', head] if head else []
             tables = fialka.Tables(fialka.MACHINE,
                                    os.path.join(fialka.ROOT, 'data', 'wheels-%s.ini' % wheel_set),

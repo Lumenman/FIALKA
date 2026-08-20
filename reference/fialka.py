@@ -149,27 +149,27 @@ class Tables:
 
         # Клавиши ЦФ, БК и пробела заняты служебным, и стоявшие на них буквы
         # обязаны найтись в верхнем ряду — иначе набрать их будет нечем
-        # (мануал 3.2.10). В остальных местах знак сразу в двух рядах — ошибка:
-        # до верхнего ряда очередь не дойдёт.
+        # (мануал 3.2.10). Знак сразу в двух рядах ошибкой не считается: до
+        # верхнего ряда очередь не дойдёт, зато на латинских головках так и
+        # сделано — цифра 8 стоит и в нижнем ряду, и в верхнем.
         served = (self.space_contact, self.shift_up, self.shift_down)
         for i, g in enumerate(self.alphabet, 1):
-            if i in served:
-                if g not in self.upper_index:
-                    raise ValueError('буква %s стоит на служебном контакте %d, '
-                                     'а в верхнем ряду её нет' % (g, i))
-            elif g in self.upper_index:
-                raise ValueError('знак %s есть в обоих рядах головки: контакты %d и %d'
-                                 % (g, i, self.upper_index[g]))
+            if i in served and g not in self.upper_index:
+                raise ValueError('буква %s стоит на служебном контакте %d, '
+                                 'а в верхнем ряду её нет' % (g, i))
 
-        # Режим цифр отпирает десять клавиш, и какие именно — проводка машины,
-        # а не головки. Цифры верхнего ряда обязаны стоять ровно на них.
+        # Режим цифр отпирает десять клавиш, и какие именно — проводка машины
+        # (keyboard.10 и парная ей alt_decoding), а не головка. Совпадут ли они
+        # с цифрами верхнего ряда — свойство пары «машина плюс головка»: на
+        # кириллической совпадают, на латинских нет. Поэтому здесь только
+        # считается, а отказ — при входе в режим цифр.
         self.digits = {g: i for g, i in self.upper_index.items() if g.isdigit()}
         if len(self.digits) != 10:
             raise ValueError('в верхнем ряду должно быть десять цифр')
-        for g, i in sorted(self.digits.items()):
-            if not self.keyboard[10][i]:
-                raise ValueError('цифра %s стоит на контакте %d, '
-                                 'а в режиме цифр он мёртв' % (g, i))
+        # по контактам, а не по цифрам: так обе реализации говорят одно и то же
+        self.dead_digits = [g for g, i in sorted(self.digits.items(),
+                                                 key=lambda kv: kv[1])
+                            if not self.keyboard[10][i]]
 
     def index(self, ch, decoding, num=0):
         """Знак -> номер контакта. Пробел делит контакт с последней буквой."""
@@ -279,6 +279,11 @@ class Key:
     def __init__(self, head, rows, tables, mode='coding', text_mode='L', position=None):
         self.mode, self.text_mode = mode, text_mode
         self.live = 10 if text_mode == 'N' else 30
+        if text_mode == 'N' and tables.dead_digits:
+            raise ValueError('головка %s: в режиме цифр клавиши цифр %s мертвы — '
+                             'какие десять клавиш отпираются, задаёт проводка '
+                             'машины, а не головка'
+                             % (tables.head_id, ' '.join(tables.dead_digits)))
         for name, row in zip(CARD_ROWS, rows):
             setattr(self, name, self._ten(row, tables))
         if position is not None:
@@ -550,7 +555,15 @@ class Machine:
 
 # ---------------------------------------------------------------------------
 def _fmt(values, alphabet=None):
-    """Ряд карты: две группы по пять, как в книгах ключей."""
+    """Ряд карты: две группы по пять, как в книгах ключей.
+
+    Головку, у которой в нижнем ряду есть цифры (латинские все такие: 26 букв
+    на тридцать контактов, четыре лишних отданы цифрам), буквами записать
+    нельзя — '5' на карте не отличить от числа 5. Такой ключ печатается
+    числами.
+    """
+    if alphabet and any(g.isdigit() for g in alphabet):
+        alphabet = None
     out = [alphabet[v - 1] if alphabet else str(v) for v in values]
     return '%-9s   %s' % (' '.join(out[:5]), ' '.join(out[5:]))
 
@@ -654,7 +667,10 @@ def selftest(tables, rounds=200):
     # смешанный и цифровой: обратимость вместе с автоматикой регистра
     mixed = sorted(tables.upper_index) + [c for c in typable
                                           if tables.typable(c, 'M')]
-    for text_mode, pool in (('M', mixed), ('N', sorted(tables.digits))):
+    modes = [('M', mixed)]
+    if not tables.dead_digits:      # латинские головки в режим цифр не умеют
+        modes.append(('N', sorted(tables.digits)))
+    for text_mode, pool in modes:
         for _ in range(rounds // 8):
             key = _random_key(tables, 'coding', text_mode)
             msg = ''.join(random.choice(pool) for _ in range(40))
@@ -789,9 +805,9 @@ def main():
         vectors = verify_vectors()
         print('векторы с оригинала:', vectors)
         # сменная головка: тот же шифр, другие знаки на контактах
-        latin = os.path.join(os.path.dirname(args.machine), 'head-latin.ini')
+        latin = os.path.join(os.path.dirname(args.machine), 'head-poland.ini')
         if not os.path.exists(latin):
-            head = 'пропущена (нет head-latin.ini)'
+            head = 'пропущена (нет head-poland.ini)'
         else:
             other = Tables(args.machine, wheels, latin)
             head = selftest(other)
