@@ -495,33 +495,82 @@ end;
 
 { ---- подготовка текста --------------------------------------------------- }
 
-var
-  PrepFrom, PrepTo: array of string;
+type
+  TStrs = array of string;
 
-procedure LoadPrepare(const Path: string);
 var
-  Ini: TIniFile;
+  PrepFrom, PrepTo: TStrs;                { [replace]: чего на машине нет }
+  AbbrFrom, AbbrTo: TStrs;                { [abbreviate]: телеграфные сокращения }
+
+procedure ReadPairs(Ini: TIniFile; const Sect: string; out F, T: TStrs);
+var
   L: TStringList;
   I, P: Integer;
 begin
-  if not FileExists(Path) then Die('нет таблицы подготовки: %s', [Path]);
-  Ini := TIniFile.Create(Path);
   L := TStringList.Create;
   try
-    Ini.ReadSectionValues('replace', L);
-    SetLength(PrepFrom, L.Count);
-    SetLength(PrepTo, L.Count);
+    Ini.ReadSectionValues(Sect, L);
+    SetLength(F, L.Count);
+    SetLength(T, L.Count);
     for I := 0 to L.Count - 1 do
     begin
       P := Pos('=', L[I]);
       { ';' и '=' в ключе не выразить, поэтому здесь те же токены, что и на
         головке: '\s' — точка с запятой, '\e' — знак равенства. }
-      PrepFrom[I] := UpFold(Unescape(Trim(Copy(L[I], 1, P - 1))));
-      PrepTo[I] := UpFold(Unescape(Trim(StripComment(Copy(L[I], P + 1, MaxInt)))));
+      F[I] := UpFold(Unescape(Trim(Copy(L[I], 1, P - 1))));
+      T[I] := UpFold(Unescape(Trim(StripComment(Copy(L[I], P + 1, MaxInt)))));
     end;
   finally
     L.Free;
+  end;
+end;
+
+procedure LoadPrepare(const Path: string);
+var
+  Ini: TIniFile;
+begin
+  if not FileExists(Path) then Die('нет таблицы подготовки: %s', [Path]);
+  Ini := TIniFile.Create(Path);
+  try
+    ReadPairs(Ini, 'replace', PrepFrom, PrepTo);
+    { секции может не быть вовсе — тогда сокращений просто нет }
+    ReadPairs(Ini, 'abbreviate', AbbrFrom, AbbrTo);
+  finally
     Ini.Free;
+  end;
+end;
+
+{ Сокращения: телеграфный стиль до машины. В отличие от замен применяются ко
+  всему тексту, а не только к тому, что не набирается: МИНУТ набирается
+  прекрасно, сокращают его не поэтому. При пустой таблице текст не меняется.
+  На каждом месте берётся самое длинное подошедшее сокращение — иначе порядок
+  строк в файле решал бы, во что превратится текст. }
+function Abbreviate(const S: string): string;
+var
+  I, J, Best: Integer;
+begin
+  if Length(AbbrFrom) = 0 then Exit(S);
+  Result := '';
+  I := 1;
+  while I <= Length(S) do
+  begin
+    Best := -1;
+    for J := 0 to High(AbbrFrom) do
+      if (AbbrFrom[J] <> '') and (Copy(S, I, Length(AbbrFrom[J])) = AbbrFrom[J])
+         and ((Best < 0) or (Length(AbbrFrom[J]) > Length(AbbrFrom[Best]))) then
+        Best := J;
+    if Best < 0 then
+    begin
+      Result := Result + S[I];
+      Inc(I);
+    end
+    else
+    begin
+      WriteLn(StdErr, Format('подготовка: сокращение %s -> %s',
+                             [AbbrFrom[Best], AbbrTo[Best]]));
+      Result := Result + AbbrTo[Best];
+      Inc(I, Length(AbbrFrom[Best]));
+    end;
   end;
 end;
 
@@ -530,15 +579,19 @@ end;
 function PrepareText(const S: string): string;
 var
   I, J, Num: Integer;
-  Ch: string;
+  Ch, Src: string;
   Hit: Boolean;
 begin
   Result := '';
+  { сначала сокращения: сокращение может привести знак, который придётся
+    заменять, а номера знаков в отказах считаются уже по сокращённому тексту —
+    до машины доезжает он }
+  Src := Abbreviate(S);
   I := 1;
   Num := 0;
-  while I <= Length(S) do
+  while I <= Length(Src) do
   begin
-    Ch := NextChar(S, I);
+    Ch := NextChar(Src, I);
     if (Ch <> #13) and (Ch <> #10) then Inc(Num);
     { заменяется только то, что в этом режиме набрать нельзя: в смешанном
       цифры и пунктуация идут на машину как есть }

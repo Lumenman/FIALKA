@@ -100,7 +100,44 @@ def check_prepare():
             print('РАСХОЖДЕНИЕ (%s)\n  паскаль: %s | %s\n  оракул:  %s | %s'
                   % (name, po, pe, yo, ye))
             bad += 1
-    return bad
+    return bad + check_abbreviate(key)
+
+
+def check_abbreviate(key):
+    """Сокращения: в поставке таблица пуста, поэтому проверка её подставляет.
+
+    Путь к prepare.ini обе реализации знают сами, ключа для него нет, так что
+    файл подменяется на время проверки и возвращается назад. Случай с ЧАС и
+    ЧАСОВ здесь главный: берётся самое длинное, иначе порядок строк в файле
+    решал бы, во что превратится текст.
+    """
+    saved = open(fialka.PREPARE, encoding='utf-8').read()
+    if '[abbreviate]\n' not in saved:
+        print('РАСХОЖДЕНИЕ (сокращения): в prepare.ini нет секции [abbreviate]')
+        return 1
+    filled = saved.replace('[abbreviate]\n', '[abbreviate]\nМИНУТ = МИН\n'
+                           'ЧАСОВ = ЧАС\nЧАС = Ч\nКООРДИНАТЫ = КООРД\n')
+    args = ['-e', '--key', key, '--prepare']
+    text = 'ЖДАТЬ ЧАСОВ ПЯТЬ, КООРДИНАТЫ ЧЕРЕЗ ДЕСЯТЬ МИНУТ.'
+    try:
+        with open(fialka.PREPARE, 'w', encoding='utf-8') as f:
+            f.write(filled)
+        pc, po, pe = run(PASCAL, args, text)
+        yc, yo, ye = run(PYTHON, args, text)
+    finally:
+        with open(fialka.PREPARE, 'w', encoding='utf-8') as f:
+            f.write(saved)
+    if pc or yc:
+        print('РАСХОЖДЕНИЕ (сокращения): паскаль код %d, оракул код %d' % (pc, yc))
+        return 1
+    if (po, pe) != (yo, ye):
+        print('РАСХОЖДЕНИЕ (сокращения)\n  паскаль: %s | %s\n  оракул:  %s | %s'
+              % (po, pe, yo, ye))
+        return 1
+    if 'ЧАСОВ -> ЧАС' not in pe or 'ЧАС -> Ч' in pe:
+        print('РАСХОЖДЕНИЕ (сокращения): взято не самое длинное\n  %s' % pe)
+        return 1
+    return 0
 
 
 def main():
