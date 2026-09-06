@@ -29,11 +29,18 @@ def norm(x):
     return (x - 1) % N + 1
 
 
-def invert(table):
-    """Обратная таблица. table[1..N] -> out[1..N]; 0 означает «нет связи»."""
+def invert(table, name):
+    """Обратная таблица. table[1..N] -> out[1..N]; 0 означает «нет связи».
+
+    Две дуги в один контакт — испорченная проводка: молча победила бы
+    последняя, а неверный шифр ничем себя не выдаёт.
+    """
     out = [0] * (N + 1)
     for i in range(1, N + 1):
         if table[i]:
+            if out[table[i]]:
+                raise ValueError('%s: в контакт %d приходят и %d, и %d'
+                                 % (name, table[i], out[table[i]], i))
             out[table[i]] = i
     return out
 
@@ -47,10 +54,46 @@ def unescape(token):
     return ESCAPES.get(token, token)
 
 
-def _row(text):
-    """Строка INI -> 1-базовый список. Пустая строка -> все нули."""
-    values = [int(v) for v in text.split()] if text.strip() else [0] * N
-    return [0] + values
+def _row(text, name):
+    """Строка INI -> 1-базовый список. Пустая строка -> все нули.
+
+    Диапазон проверяется здесь: испорченный INI должен назвать себя, а не
+    свалиться где-нибудь в invert по IndexError.
+    """
+    if not text.strip():
+        return [0] * (N + 1)
+    values = text.split()
+    if len(values) != N:
+        raise ValueError('%s: ожидалось %d чисел, получено %d'
+                         % (name, N, len(values)))
+    out = [0]
+    for v in values:
+        try:
+            x = int(v)
+        except ValueError:
+            raise ValueError('%s: не число: %s' % (name, v)) from None
+        if not 0 <= x <= N:
+            raise ValueError('%s: контакт %d вне 0..%d' % (name, x, N))
+        out.append(x)
+    return out
+
+
+def _mint(section, name, key):
+    """Обязательный целый параметр INI. Отсутствующий и нечисловой обязаны
+    назвать себя: молчаливый ноль дал бы правдоподобный, но неверный шифр."""
+    if key not in section or not section[key].strip():
+        raise ValueError('[%s] %s: параметр не задан' % (name, key))
+    try:
+        return int(section[key])
+    except ValueError:
+        raise ValueError('[%s] %s: ожидалось целое число, получено %s'
+                         % (name, key, section[key].strip())) from None
+
+
+def _check_contact(value, name):
+    if not 1 <= value <= N:
+        raise ValueError('%s: ожидался контакт 1..%d, получено %d'
+                         % (name, N, value))
 
 
 class Tables:
@@ -59,31 +102,32 @@ class Tables:
     def __init__(self, machine_ini, wheels_ini, head_ini=None):
         # interpolation=None: в верхнем ряду головки есть знак '%'
         m = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
-        m.read(machine_ini, encoding='utf-8')
+        m.read(machine_ini, encoding='utf-8-sig')
         self.script = m['machine'].get('script', '').strip()
-        self.space_contact = int(m['machine']['space_contact'])
-        self.probe_even = int(m['machine']['probe_even'])
-        self.probe_odd = int(m['machine']['probe_odd'])
+        self.space_contact = _mint(m['machine'], 'machine', 'space_contact')
+        self.probe_even = _mint(m['machine'], 'machine', 'probe_even')
+        self.probe_odd = _mint(m['machine'], 'machine', 'probe_odd')
         # ЦФ и БК — клавиши, а не знаки: их контакты задаёт проводка машины,
         # а какие буквы они вытеснили, зависит от головки.
-        self.shift_up = int(m['machine']['shift_up'])
-        self.shift_down = int(m['machine']['shift_down'])
+        self.shift_up = _mint(m['machine'], 'machine', 'shift_up')
+        self.shift_down = _mint(m['machine'], 'machine', 'shift_down')
+        for name in ('space_contact', 'probe_even', 'probe_odd',
+                     'shift_up', 'shift_down'):
+            _check_contact(getattr(self, name), name)
         if len({self.shift_up, self.shift_down, self.space_contact}) != 3:
             raise ValueError('ЦФ, БК и пробел не могут сидеть на одном контакте')
 
-        self.entry = _row(m['entry']['wiring'])
-        self.entry_inv = invert(self.entry)
-        self.card_builtin = _row(m['card']['builtin'])
-        self.keyboard = {int(k.split('.')[1]): _row(m[k]['wiring'])
+        self.entry = _row(m['entry']['wiring'], 'entry')
+        self.entry_inv = invert(self.entry, 'entry')
+        self.card_builtin = _row(m['card']['builtin'], 'card.builtin')
+        self.keyboard = {int(k.split('.')[1]): _row(m[k]['wiring'], k)
                          for k in m.sections() if k.startswith('keyboard.')}
         self.reflector = {}
         for k in (s for s in m.sections() if s.startswith('reflector.')):
             live = int(k.split('.')[1])
             self.reflector[live] = {
-                'coding': _row(m[k]['coding']),
-                'decoding': _row(m[k]['decoding']),
-                'alt_coding': _row(m[k]['alt_coding']),
-                'alt_decoding': _row(m[k]['alt_decoding']),
+                name: _row(m[k][name], '%s.%s' % (k, name))
+                for name in ('coding', 'decoding', 'alt_coding', 'alt_decoding')
             }
 
         # Головка называется строкой script машины; -H подставляет любую.
@@ -92,18 +136,18 @@ class Tables:
                        check_id=head_ini is None)
 
         w = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
-        w.read(wheels_ini, encoding='utf-8')
+        w.read(wheels_ini, encoding='utf-8-sig')
         self.wheel_set = w['set']['id'].strip()
         self.wiring, self.wiring_inv, self.pins = [None], [None], [None]
         for i in range(1, SLOTS + 1):
-            wiring = _row(w['wheel%d' % i]['wiring'])
+            wiring = _row(w['wheel%d' % i]['wiring'], 'диск %d' % i)
             if sorted(wiring[1:]) != list(range(1, N + 1)):
                 raise ValueError('диск %d: проводка не перестановка 1..%d' % (i, N))
             pins = {int(v) for v in w['wheel%d' % i]['pins'].split()}
             if pins - set(range(1, N + 1)):
                 raise ValueError('диск %d: штифт вне диапазона' % i)
             self.wiring.append(wiring)
-            self.wiring_inv.append(invert(wiring))
+            self.wiring_inv.append(invert(wiring, 'диск %d' % i))
             self.pins.append(pins)
 
     # ---- печатающая головка -------------------------------------------------
@@ -115,7 +159,7 @@ class Tables:
         трогая машину.
         """
         h = configparser.ConfigParser(inline_comment_prefixes=(';',), interpolation=None)
-        h.read(path, encoding='utf-8')
+        h.read(path, encoding='utf-8-sig')      # BOM от редакторов Windows
         if 'head' not in h:
             raise ValueError('нет файла головки: %s' % path)
         self.head_id = h['head']['id'].strip()
@@ -125,7 +169,9 @@ class Tables:
                              % (self.script, self.head_id))
 
         # Оба ряда читаются одинаково: токен на контакт, разделитель — пробел.
-        # Знак может быть и многобайтным, и составным (буква плюс диакритика).
+        # Знак — ровно один code point: и клавиатура, и печать ищут его
+        # сравнением строк, а составной (буква плюс диакритика) не совпал бы
+        # ни с одним разбором входного текста.
         self.alphabet = [unescape(t) for t in h['head']['lower'].split()]
         if len(self.alphabet) != N:
             raise ValueError('в нижнем ряду головки %d знаков, а нужно %d'
@@ -146,6 +192,24 @@ class Tables:
                 raise ValueError('знак %s в верхнем ряду головки дважды' % g)
         self.upper_index = {g: i for i, g in enumerate(self.upper)
                             if i and g and i not in (self.shift_up, self.shift_down)}
+        # надписи ЦФ и БК не в счёт: это команды печатающей головке, а не знаки
+        for i, g in enumerate(self.alphabet, 1):
+            if len(g) != 1:
+                raise ValueError('нижний ряд, контакт %d (%s): знак должен быть '
+                                 'одним символом' % (i, g))
+        for i, g in enumerate(self.upper[1:], 1):
+            if len(g) > 1 and i not in (self.shift_up, self.shift_down):
+                raise ValueError('верхний ряд, контакт %d (%s): знак должен быть '
+                                 'одним символом' % (i, g))
+        # Пустая ячейка верхнего ряда на всех известных головках ровно одна —
+        # на клавише пробела: при поднятом регистре печатать там нечего, и
+        # печатается пробел (см. _mixed_out). Появится головка с другим
+        # пропуском — придётся заново решать, что она печатает.
+        for i, g in enumerate(self.upper[1:], 1):
+            if not g and i != self.space_contact:
+                raise ValueError('верхний ряд, контакт %d пуст, а пустым может '
+                                 'быть только контакт пробела (%d)'
+                                 % (i, self.space_contact))
 
         # Клавиши ЦФ, БК и пробела заняты служебным, и стоявшие на них буквы
         # обязаны найтись в верхнем ряду — иначе набрать их будет нечем
@@ -261,7 +325,7 @@ def parse_card(lines):
 
 
 def read_card(path):
-    with open(path, encoding='utf-8') as f:
+    with open(path, encoding='utf-8-sig') as f:
         return parse_card(f)
 
 
@@ -295,7 +359,7 @@ class Key:
         elif card == 'builtin':
             self.card = list(tables.card_builtin)
         else:
-            self.card = _row(card)
+            self.card = _row(card, 'перфокарта')
 
     @staticmethod
     def _ten(tokens, tables):
@@ -422,9 +486,9 @@ class Machine:
         self.k = key
         self.pos = list(key.position)
         self.card = key.card
-        self.card_inv = invert(self.card)
+        self.card_inv = invert(self.card, 'перфокарта')
         self.kb = tables.keyboard[key.live]
-        self.kb_inv = invert(self.kb)
+        self.kb_inv = invert(self.kb, 'keyboard.%d' % key.live)
         refl = tables.reflector[key.live]
         if key.mode == 'plain':
             ident = [0] + list(range(1, N + 1))
@@ -514,6 +578,18 @@ class Machine:
         return out
 
     def process(self, text):
+        # Перевода строки на машине нет: все тридцать контактов заняты буквами,
+        # пробелом, ЦФ и БК, а печаталась лента. Разрыв просто выпадает, но
+        # тогда слова склеиваются, и молчать об этом нельзя: получатель
+        # расшифрует не то, что отправляли. Разрывы в начале и в конце текста
+        # ничего не склеивают.
+        # не splitlines(): он рвёт строку ещё и по U+2028 и прочей
+        # экзотике, которой машина всё равно не знает
+        lines = text.replace(chr(13) + chr(10), chr(10)).replace(chr(13), chr(10))
+        glued = len([p for p in lines.split(chr(10)) if p]) - 1
+        if glued > 0:
+            print('перевод строки машиной не набирается: отброшено %d, слова '
+                  'склеены — разделяйте пробелом' % glued, file=sys.stderr)
         decoding = self.k.mode == 'decoding'
         if self.k.text_mode == 'N':
             return self._numbers(text)
@@ -735,8 +811,10 @@ def verify_demo():
         return 'пропущена (нет: %s)' % ', '.join(missing)
     # комплект 6K подтягивается по "set =" из самого ключа
     tables, key = load(paths['machine'], paths['key'])
-    plain = open(paths['plain'], encoding='utf-8').read().strip()
-    expect = open(paths['cipher'], encoding='utf-8').read().strip()
+    # не .strip(): начальный и хвостовой пробел — знак машины, и вектор с ним
+    # проверял бы не то, что записано в файле
+    plain = open(paths['plain'], encoding='utf-8-sig').read().rstrip('\r\n')
+    expect = open(paths['cipher'], encoding='utf-8-sig').read().rstrip('\r\n')
     got = Machine(tables, key).process(plain)
     if got != expect:
         return 'РАСХОЖДЕНИЕ\n  получено: %s\n  ожидалось: %s' % (got, expect)
@@ -858,7 +936,8 @@ def main():
         ap.error('--prepare применяется только к открытому тексту')
     tables, key = load(args.machine, args.key, args.wheels, args.head,
                        mode=args.mode, text_mode=args.text_mode, position=args.pos)
-    text = open(args.src, encoding='utf-8').read() if args.src else sys.stdin.read()
+    text = (open(args.src, encoding='utf-8-sig').read() if args.src
+            else sys.stdin.read().removeprefix('﻿'))     # BOM и в потоке
     # без .strip(): пробел — знак машины, переводы строк process пропускает сам
     text = text.upper()          # регистра на машине нет: «п» и «П» — одна клавиша
     if args.prepare:

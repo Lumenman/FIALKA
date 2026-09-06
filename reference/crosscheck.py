@@ -17,7 +17,10 @@ import fialka
 
 EXE = os.path.join(fialka.ROOT, 'pascal', 'fialka.exe')
 KEYS = ('3K', '5K', '6K')
-TEXT_MODES = ('L', 'M', 'N', 'L')       # рычаг Б/С/Ц
+# Рычаг Б/С/Ц. Длина 3, а не 4: направление берётся по чётности круга, и при
+# четырёх режимах смешанный доставался бы только расшифрованию, а цифровой —
+# только зашифрованию. При трёх все шесть сочетаний обходятся.
+TEXT_MODES = ('L', 'M', 'N')
 # Раз в пять кругов машина идёт с латинской головкой: шифр тот же, знаки на
 # контактах другие, и обе реализации обязаны прочитать их одинаково. Режим
 # цифр с ней не берётся: десять клавиш отпирает проводка машины, а цифры
@@ -42,6 +45,8 @@ def pool_for(tables, text_mode, mode):
     return chars
 
 
+NL = chr(10)
+BOM = chr(0xFEFF)
 HERE = os.path.dirname(os.path.abspath(__file__))
 PASCAL = [EXE]
 PYTHON = [sys.executable, os.path.join(HERE, 'fialka.py')]
@@ -87,6 +92,13 @@ def check_prepare():
         ('смешанный: чужой знак', ['--mode', 'M'], 'ПРИВЕТ!'),
         ('цифры: буква', ['--mode', 'N'], '12А'),
         ('цифры группами', ['--mode', 'N'], '24310 24310'),
+        # клавиши «новая строка» на машине нет: разрыв выпадает, но про
+        # склейку слов обе реализации обязаны сказать одинаково
+        ('перевод строки', [], 'ПРИВЕТ' + NL + 'МИР'),
+        ('два разрыва подряд', [], 'ПРИВЕТ' + NL + NL + 'МИР'),
+        ('разрыв в конце ничего не склеил', [], 'ПРИВЕТ' + NL),
+        ('разрыв перед отказом', [], 'ЙОД' + NL + 'МИР'),
+        ('BOM в потоке', [], BOM + 'ПРИВЕТ'),
     ]
     bad = 0
     for name, extra, text in cases:
@@ -178,8 +190,13 @@ def main():
             _, key = fialka.load(fialka.MACHINE, tmp, head_path=head, mode=mode,
                                  text_mode=text_mode, position=pos)
             want = fialka.Machine(tables, key).process(text)
+            # На сменной головке текст подаётся строчным: регистра на машине
+            # нет, и складывать латиницу головки обе реализации обязаны
+            # одинаково (эталон это делает str.upper()). Ожидаемое считается
+            # по прописному тексту — сложить строчный и есть проверка.
+            sent = text.lower() if head else text
             got = run_pascal(['-d' if mode == 'decoding' else '-e', '-k', tmp,
-                              '--pos', pos, '--mode', text_mode] + head_args, text)
+                              '--pos', pos, '--mode', text_mode] + head_args, sent)
             if got != want:
                 bad += 1
                 print('РАСХОЖДЕНИЕ %s %s %s (головка %s)\n  вход:    %s'

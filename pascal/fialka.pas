@@ -64,8 +64,14 @@ var
   { Состояние машины: положение дисков в барабане. }
   WPos: TRow;
 
+  { Трасса. Объявлена здесь, а не у своих функций: её сбрасывает Die. }
+  Logging: Boolean = False;
+  LogF: TextFile;
+
 procedure Die(const Fmt: string; const Args: array of const);
 begin
+  { трасса нужна как раз тогда, когда контур не сошёлся, а Halt буфер не сбросит }
+  if Logging then Flush(LogF);
   WriteLn(StdErr, 'ошибка: ', Format(Fmt, Args));
   Halt(1);
 end;
@@ -80,13 +86,21 @@ begin
   Result := Result + 1;
 end;
 
-procedure Invert(const Src: TWire; out Dst: TWire);
+{ Обратная таблица. Две дуги в один контакт — испорченная проводка: молча
+  победила бы последняя, а неверный шифр ничем себя не выдаёт. }
+procedure Invert(const Src: TWire; out Dst: TWire; const Name: string);
 var
   I: Integer;
 begin
   FillChar(Dst, SizeOf(Dst), 0);
   for I := 1 to N do
-    if Src[I] <> 0 then Dst[Src[I]] := I;
+    if Src[I] <> 0 then
+    begin
+      if Dst[Src[I]] <> 0 then
+        Die('%s: в контакт %d приходят и %d, и %d',
+            [Name, Src[I], Dst[Src[I]], I]);
+      Dst[Src[I]] := I;
+    end;
 end;
 
 function Tokens(const S: string): TStringList;
@@ -134,8 +148,10 @@ end;
 
 { Аргументы командной строки Windows отдаёт в системной кодировке, а внутри
   всё в UTF-8. Move вместо присваивания — чтобы FPC не перекодировал обратно
-  по метке кодовой страницы. }
+  по метке кодовой страницы. Больше нигде это не нужно: в остальных системах
+  argv и так UTF-8, а при неудачной локали перекодировка его же и испортит. }
 function ArgToUtf8(const S: string): string;
+{$IFDEF WINDOWS}
 var
   U: UTF8String;
 begin
@@ -143,6 +159,13 @@ begin
   SetLength(Result, Length(U));
   if Length(U) > 0 then Move(U[1], Result[1], Length(U));
 end;
+{$ELSE}
+begin
+  { на остальных системах argv уже UTF-8, а при неудачной локали
+    UnicodeString() сделал бы из него мусор }
+  Result := S;
+end;
+{$ENDIF}
 
 function ContactOf(const Ch: string): Integer;
 var
@@ -191,15 +214,37 @@ begin
   end;
 end;
 
+{ Прописная буква по коду знака. Ровно те блоки, из которых набраны наши
+  головки: латиница-1 (ä ö ü ó), расширенная A (ą ć ę ł ń ś ź ż ě š č ř ž ů) и
+  кириллица. Эталон складывает регистр через str.upper(), и без этих двух
+  латинских блоков реализации разъезжались: польское «ą» Питон шифровал, а
+  Паскаль отвергал. Обе двухбайтные лакуны .upper() (ß -> SS, ÿ -> Ÿ, ı -> I)
+  сюда не лезут — ни на одной головке их нет, и знак остался бы двухбайтным. }
+function FoldCP(CP: Integer): Integer;
+begin
+  Result := CP;
+  if (CP >= $E0) and (CP <= $FE) and (CP <> $F7) then Result := CP - $20  { à..þ }
+  else if (CP >= $100) and (CP <= $137) and Odd(CP) and (CP <> $131) then
+    Result := CP - 1                                                     { ā..ķ }
+  else if (CP >= $139) and (CP <= $148) and not Odd(CP) then
+    Result := CP - 1                                                     { ĺ..ň }
+  else if (CP >= $14A) and (CP <= $177) and Odd(CP) then
+    Result := CP - 1                                                     { ŋ..ŷ }
+  else if (CP >= $179) and (CP <= $17E) and not Odd(CP) then
+    Result := CP - 1                                                     { ź..ž }
+  else if (CP >= $430) and (CP <= $44F) then Result := CP - $20           { а..я }
+  else if (CP >= $450) and (CP <= $45F) then Result := CP - $50;          { ё..џ }
+end;
+
 { Регистра на машине нет: «п» и «П» — одна клавиша, поэтому приводить к
-  прописным можно молча. Арифметика по блоку кириллицы в UTF-8: WideUpperCase
-  на не-Windows без cwstring тихо ограничивается латиницей, а это ровно тот
-  случай, когда тихо неправильно хуже, чем десять строк руками. }
+  прописным можно молча. Арифметика по коду знака: WideUpperCase на не-Windows
+  без cwstring тихо ограничивается латиницей, а это ровно тот случай, когда
+  тихо неправильно хуже, чем двадцать строк руками. Все складываемые блоки
+  двухбайтны в UTF-8 и остаются двухбайтными после складывания. }
 function UpFold(const S: string): string;
 var
-  I: Integer;
+  I, CP: Integer;
   Ch: string;
-  B1, B2: Byte;
 begin
   Result := '';
   I := 1;
@@ -212,20 +257,10 @@ begin
     end
     else if Length(Ch) = 2 then
     begin
-      B1 := Byte(Ch[1]);
-      B2 := Byte(Ch[2]);
-      if (B1 = $D0) and (B2 >= $B0) and (B2 <= $BF) then          { а..п }
-        Ch[2] := Chr(B2 - $20)
-      else if (B1 = $D1) and (B2 >= $80) and (B2 <= $8F) then     { р..я }
-      begin
-        Ch[1] := Chr($D0);
-        Ch[2] := Chr(B2 + $20);
-      end
-      else if (B1 = $D1) and (B2 = $91) then                      { ё }
-      begin
-        Ch[1] := Chr($D0);
-        Ch[2] := Chr($81);
-      end;
+      CP := ((Byte(Ch[1]) and $1F) shl 6) or (Byte(Ch[2]) and $3F);
+      CP := FoldCP(CP);
+      Ch[1] := Chr($C0 or (CP shr 6));
+      Ch[2] := Chr($80 or (CP and $3F));
     end;
     Result := Result + Ch;
   end;
@@ -243,6 +278,18 @@ begin
   finally
     F.Free;
   end;
+  { BOM, который дописывают редакторы Windows, знаком сообщения не является }
+  if Copy(Result, 1, 3) = #$EF#$BB#$BF then Delete(Result, 1, 3);
+end;
+
+{ Хвостовой перевод строки файла — тоже не знак сообщения. Trim здесь
+  недопустим: он съел бы и пробел, а пробел машина набирает. }
+function ChopEol(const S: string): string;
+begin
+  Result := S;
+  while (Result <> '')
+        and ((Result[Length(Result)] = #10) or (Result[Length(Result)] = #13)) do
+    SetLength(Result, Length(Result) - 1);
 end;
 
 { ---- таблицы ------------------------------------------------------------ }
@@ -266,9 +313,17 @@ begin
   Result := Trim(StripComment(Ini.ReadString(Sect, Key, '')));
 end;
 
+{ Обязательный целый параметр. Отсутствующий и нечисловой обязаны назвать
+  себя: молчаливый ноль дал бы правдоподобный, но неверный шифр. }
 function IniInt(Ini: TIniFile; const Sect, Key: string): Integer;
+var
+  S: string;
 begin
-  Result := StrToIntDef(IniStr(Ini, Sect, Key), 0);
+  Result := 0;
+  S := IniStr(Ini, Sect, Key);
+  if S = '' then Die('[%s] %s: параметр не задан', [Sect, Key]);
+  if not TryStrToInt(S, Result) then
+    Die('[%s] %s: ожидалось целое число, получено %s', [Sect, Key, S]);
 end;
 
 { Двух знаков в значении INI не выразить: ';' начинает комментарий, а '=' не
@@ -280,20 +335,35 @@ begin
   else Result := Tok;
 end;
 
-procedure ParseWire(const S: string; out W: TWire);
+{ Разбор проводки. Диапазон проверяется здесь, а не проверками компилятора:
+  испорченный INI должен назвать себя, а не свалиться range check error
+  где-то в Invert. }
+procedure ParseWire(const S: string; out W: TWire; const Name: string);
 var
   L: TStringList;
-  I: Integer;
+  I, V: Integer;
 begin
   FillChar(W, SizeOf(W), 0);
   L := Tokens(S);
   try
     if L.Count = 0 then Exit;                  { пустая строка — все нули }
-    if L.Count <> N then Die('в таблице ожидалось %d чисел, получено %d', [N, L.Count]);
-    for I := 1 to N do W[I] := StrToInt(L[I - 1]);
+    if L.Count <> N then
+      Die('%s: ожидалось %d чисел, получено %d', [Name, N, L.Count]);
+    for I := 1 to N do
+    begin
+      if not TryStrToInt(L[I - 1], V) then Die('%s: не число: %s', [Name, L[I - 1]]);
+      if (V < 0) or (V > N) then Die('%s: контакт %d вне 0..%d', [Name, V, N]);
+      W[I] := V;
+    end;
   finally
     L.Free;
   end;
+end;
+
+procedure CheckContact(V: Integer; const Name: string);
+begin
+  if (V < 1) or (V > N) then
+    Die('%s: ожидался контакт 1..%d, получено %d', [Name, N, V]);
 end;
 
 { Печатающая головка: два ряда знаков на тридцати контактах. Шифра она не
@@ -352,6 +422,30 @@ begin
         Die('знак %s в верхнем ряду головки дважды', [Upper[I]]);
     end;
 
+  { Знак головки — ровно один code point: и клавиатура, и печать ищут его
+    сравнением строк, а составной (буква плюс диакритика) не совпал бы ни с
+    одним разбором входного текста. Надписи ЦФ и БК не в счёт: это команды
+    печатающей головке, а не знаки, набрать их нельзя. }
+  for I := 1 to N do
+  begin
+    if CharLen(Byte(Alphabet[I][1])) <> Length(Alphabet[I]) then
+      Die('нижний ряд, контакт %d (%s): знак должен быть одним символом',
+          [I, Alphabet[I]]);
+    if (Upper[I] <> '') and (I <> ShiftUp) and (I <> ShiftDown)
+       and (CharLen(Byte(Upper[I][1])) <> Length(Upper[I])) then
+      Die('верхний ряд, контакт %d (%s): знак должен быть одним символом',
+          [I, Upper[I]]);
+  end;
+
+  { Пустая ячейка верхнего ряда на всех известных головках ровно одна — на
+    клавише пробела: при поднятом регистре печатать там нечего, и печатается
+    пробел (см. Process). Появится головка с другим пропуском — придётся
+    заново решать, что она печатает, а до тех пор молчать об этом нельзя. }
+  for I := 1 to N do
+    if (Upper[I] = '') and (I <> SpaceContact) then
+      Die('верхний ряд, контакт %d пуст, а пустым может быть только контакт '
+          + 'пробела (%d)', [I, SpaceContact]);
+
   { Клавиши ЦФ, БК и пробела заняты служебным, и стоявшие на них буквы обязаны
     найтись в верхнем ряду — иначе набрать их будет нечем (мануал 3.2.10).
     Знак сразу в двух рядах ошибкой не считается: до верхнего ряда очередь не
@@ -386,7 +480,10 @@ begin
     Die('в верхнем ряду головки %d цифр, а нужно десять', [Digits]);
 end;
 
-procedure LoadMachine(const Path: string; Live: Integer);
+{ Live — глобал: он же решает, какая головка законна, и какой клавиатурой
+  считать шифр. Параметром он раньше затенял глобал, и инвариант «загружено
+  то, что в Live» держался только дисциплиной вызывающего. }
+procedure LoadMachine(const Path: string);
 var
   Ini: TIniFile;
   Sect, Head: string;
@@ -402,33 +499,35 @@ begin
       а какие буквы они вытеснили, зависит от головки. }
     ShiftUp := IniInt(Ini, 'machine', 'shift_up');
     ShiftDown := IniInt(Ini, 'machine', 'shift_down');
-    if (SpaceContact < 1) or (SpaceContact > N) then Die('space_contact вне 1..%d', [N]);
-    if (ShiftUp < 1) or (ShiftUp > N) or (ShiftDown < 1) or (ShiftDown > N) then
-      Die('shift_up и shift_down должны быть контактами 1..%d', [N]);
+    CheckContact(SpaceContact, 'space_contact');
+    CheckContact(ProbeEven, 'probe_even');
+    CheckContact(ProbeOdd, 'probe_odd');
+    CheckContact(ShiftUp, 'shift_up');
+    CheckContact(ShiftDown, 'shift_down');
     if (ShiftUp = ShiftDown) or (ShiftUp = SpaceContact)
        or (ShiftDown = SpaceContact) then
       Die('ЦФ, БК и пробел не могут сидеть на одном контакте', []);
 
-    ParseWire(IniStr(Ini, 'entry', 'wiring'), Entry);
-    Invert(Entry, EntryInv);
-    ParseWire(IniStr(Ini, 'card', 'builtin'), CardBuiltin);
+    ParseWire(IniStr(Ini, 'entry', 'wiring'), Entry, 'entry');
+    Invert(Entry, EntryInv, 'entry');
+    ParseWire(IniStr(Ini, 'card', 'builtin'), CardBuiltin, 'card.builtin');
 
     { нужна всегда, а не только в режиме цифр: по ней проверяется головка }
     if not Ini.SectionExists('keyboard.10') then
       Die('в машине нет секции [keyboard.10]', []);
-    ParseWire(IniStr(Ini, 'keyboard.10', 'wiring'), NumKeys);
+    ParseWire(IniStr(Ini, 'keyboard.10', 'wiring'), NumKeys, 'keyboard.10');
 
     Sect := Format('keyboard.%d', [Live]);
     if not Ini.SectionExists(Sect) then Die('в машине нет секции [%s]', [Sect]);
-    ParseWire(IniStr(Ini, Sect, 'wiring'), Keyboard);
-    Invert(Keyboard, KeyboardInv);
+    ParseWire(IniStr(Ini, Sect, 'wiring'), Keyboard, Sect);
+    Invert(Keyboard, KeyboardInv, Sect);
 
     Sect := Format('reflector.%d', [Live]);
     if not Ini.SectionExists(Sect) then Die('в машине нет секции [%s]', [Sect]);
-    ParseWire(IniStr(Ini, Sect, 'coding'), Coding);
-    ParseWire(IniStr(Ini, Sect, 'decoding'), Decoding);
-    ParseWire(IniStr(Ini, Sect, 'alt_coding'), AltCoding);
-    ParseWire(IniStr(Ini, Sect, 'alt_decoding'), AltDecoding);
+    ParseWire(IniStr(Ini, Sect, 'coding'), Coding, Sect + '.coding');
+    ParseWire(IniStr(Ini, Sect, 'decoding'), Decoding, Sect + '.decoding');
+    ParseWire(IniStr(Ini, Sect, 'alt_coding'), AltCoding, Sect + '.alt_coding');
+    ParseWire(IniStr(Ini, Sect, 'alt_decoding'), AltDecoding, Sect + '.alt_decoding');
   finally
     Ini.Free;
   end;
@@ -464,7 +563,8 @@ begin
     WheelSet := IniStr(Ini, 'set', 'id');
     for I := 1 to SLOTS do
     begin
-      ParseWire(IniStr(Ini, Format('wheel%d', [I]), 'wiring'), Wiring[I]);
+      ParseWire(IniStr(Ini, Format('wheel%d', [I]), 'wiring'), Wiring[I],
+                Format('диск %d', [I]));
       Seen := [];
       for J := 1 to N do
       begin
@@ -473,7 +573,7 @@ begin
       end;
       if Seen <> [Low(TContact)..High(TContact)] then
         Die('диск %d: проводка не перестановка 1..%d', [I, N]);
-      Invert(Wiring[I], WiringInv[I]);
+      Invert(Wiring[I], WiringInv[I], Format('диск %d', [I]));
 
       Pins[I] := [];
       L := Tokens(IniStr(Ini, Format('wheel%d', [I]), 'pins'));
@@ -756,8 +856,8 @@ begin
   else if HeadCard = 'builtin' then
     Card := CardBuiltin
   else
-    ParseWire(HeadCard, Card);
-  Invert(Card, CardInv);
+    ParseWire(HeadCard, Card, 'перфокарта');
+  Invert(Card, CardInv, 'перфокарта');
 end;
 
 { ---- машина ------------------------------------------------------------- }
@@ -827,10 +927,6 @@ begin
 end;
 
 { ---- трасса ------------------------------------------------------------- }
-
-var
-  Logging: Boolean = False;
-  LogF: TextFile;
 
 function PosLine: string;
 var
@@ -1012,6 +1108,32 @@ begin
   Result := C;
 end;
 
+{ Сколько разрывов строки склеивают слова. Перевода строки на машине нет:
+  все тридцать контактов заняты буквами, пробелом, ЦФ и БК, а печаталась
+  лента. Разрыв просто выпадает, но молчать об этом нельзя: получатель
+  расшифрует не то, что отправляли. Разрывы в начале и в конце текста ничего
+  не склеивают, идущие подряд считаются за один. }
+function GluedBreaks(const Text: string): Integer;
+var
+  I: Integer;
+  Seen, Broken: Boolean;
+begin
+  Result := 0;
+  Seen := False;
+  Broken := False;
+  for I := 1 to Length(Text) do            { по байтам: хвосты UTF-8 не #10/#13 }
+    if (Text[I] = #13) or (Text[I] = #10) then
+    begin
+      if Seen then Broken := True;
+    end
+    else
+    begin
+      if Broken then Inc(Result);
+      Broken := False;
+      Seen := True;
+    end;
+end;
+
 procedure Push(var A: TIntArray; V: Integer);
 begin
   SetLength(A, Length(A) + 1);
@@ -1024,11 +1146,17 @@ end;
   с известного регистра. }
 function InputContacts(const Text: string): TIntArray;
 var
-  I, Num, C: Integer;
+  I, Num, C, Glued: Integer;
   Ch: string;
   UpperRow, Reg: Boolean;
 begin
   Result := nil;
+  { до разбора: предупреждение обязано выйти и тогда, когда разбор упрётся
+    в ненабираемый знак и уйдёт с отказом }
+  Glued := GluedBreaks(Text);
+  if Glued > 0 then
+    WriteLn(StdErr, Format('перевод строки машиной не набирается: отброшено %d, '
+                           + 'слова склеены — разделяйте пробелом', [Glued]));
   I := 1;
   Num := 0;
   Reg := False;
@@ -1068,6 +1196,7 @@ var
   Ins: TIntArray;
   I, COut: Integer;
   Reg: Boolean;
+  Ch: string;
 begin
   Result := '';
   Ins := InputContacts(Text);
@@ -1081,21 +1210,28 @@ begin
       WriteLn(LogF, Format('  поз   %s   щупы %s', [PosLine, PinLine]));
     end;
     COut := Contact(Ins[I]);
+    Ch := '';
     if TextMode = tmNumbers then
-      Result := Result + Upper[COut]
+      Ch := Upper[COut]
     else if (TextMode = tmMixed) and (Mode = mDecoding) then
     begin
       { переключения печати не дают: они и есть команда печатающей головке }
       if COut = ShiftUp then Reg := True
       else if COut = ShiftDown then Reg := False
-      else if Reg and (Upper[COut] <> '') then Result := Result + Upper[COut]
+      else if Reg and (Upper[COut] <> '') then Ch := Upper[COut]
       { контакт пробела верхнего знака не имеет: печатается пробелом }
-      else Result := Result + LetterOf(COut);
+      else Ch := LetterOf(COut);
     end
     else
-      Result := Result + LetterOf(COut);
+      Ch := LetterOf(COut);
+    Result := Result + Ch;
+    { в лог — то же, что на бумагу: в режимах Ц и С это не буква нижнего ряда }
     if Logging then
-      WriteLn(LogF, Format('  =      контакт %d = %s', [COut, LetterOf(COut)]));
+      if Ch = '' then
+        WriteLn(LogF, Format('  =      контакт %d = %s, печати нет',
+                             [COut, Upper[COut]]))
+      else
+        WriteLn(LogF, Format('  =      контакт %d = %s', [COut, Ch]));
     Step;
   end;
 end;
@@ -1130,7 +1266,7 @@ begin
   RandomRow(CoreOffset, N);
   RandomRow(Position, N);
   Card := CardBuiltin;
-  Invert(Card, CardInv);
+  Invert(Card, CardInv, 'перфокарта');
 end;
 
 { Ряд карты: две группы по пять, как в книгах ключей.
@@ -1263,8 +1399,10 @@ begin
   BuildKey('');
   Mode := mCoding;
   Setup;
-  Plain := Trim(ReadAll(PlainPath));
-  Expect := Trim(ReadAll(CipherPath));
+  { не Trim: начальный и хвостовой пробел — знак машины, и вектор с ним
+    проверял бы не то, что записано в файле }
+  Plain := ChopEol(ReadAll(PlainPath));
+  Expect := ChopEol(ReadAll(CipherPath));
   Got := Process(Plain);
   if Got <> Expect then
     Exit(Format('РАСХОЖДЕНИЕ'#10'  получено:  %s'#10'  ожидалось: %s', [Got, Expect]));
@@ -1289,7 +1427,7 @@ begin
     TextMode := TM;
     if TM = tmNumbers then Live := 10 else Live := 30;
     if TM = tmNumbers then Name := 'цифр' else Name := 'смешанном';
-    LoadMachine(MachinePath, Live);
+    LoadMachine(MachinePath);
     Pool := TStringList.Create;
     try
       for C := 1 to N do
@@ -1328,7 +1466,7 @@ begin
   end;
   TextMode := tmLetters;
   Live := 30;
-  LoadMachine(MachinePath, Live);
+  LoadMachine(MachinePath);
 end;
 
 { 5. Векторы, снятые с оригинальной программы: в отличие от demo/de.txt они
@@ -1343,51 +1481,56 @@ begin
   Count := 0;
   if not (FileExists(KeyPath) and FileExists(VecPath)) then
     Exit('пропущена (нет demo/vectors.txt)');
-  F := TStringList.Create;
+  { каждый вектор перезагружает машину под свой режим, а выходов отсюда много:
+    без finally следующая проверка досталась бы чужому Live и чужой головке }
   try
-    F.LoadFromFile(VecPath);
-    for I := 0 to F.Count - 1 do
-    begin
-      Line := Trim(F[I]);
-      if (Line = '') or (Line[1] = ';') then Continue;
-      P1 := Pos('|', Line);
-      P2 := Length(Line);
-      while (P2 > P1) and (Line[P2] <> '|') do Dec(P2);
-      if (P1 = 0) or (P2 = P1) then Exit(Format('строка %d: нужно два "|"', [I + 1]));
-      Tok := UpperCase(Trim(Copy(Line, 1, P1 - 1)));
-      Plain := Trim(Copy(Line, P1 + 1, P2 - P1 - 1));
-      Cipher := Trim(Copy(Line, P2 + 1, MaxInt));
-      if Tok = 'N' then TextMode := tmNumbers
-      else if Tok = 'M' then TextMode := tmMixed
-      else TextMode := tmLetters;
-      if TextMode = tmNumbers then Live := 10 else Live := 30;
-      LoadMachine(MachinePath, Live);
-      ReadCard(KeyPath);
-      if HeadSet = '' then Exit('в ключе нет "set ="');
-      LoadWheels(ExtractFilePath(MachinePath) + Format('wheels-%s.ini', [HeadSet]));
-      BuildKey('');
-      Inc(Count);
+    F := TStringList.Create;
+    try
+      F.LoadFromFile(VecPath);
+      for I := 0 to F.Count - 1 do
+      begin
+        Line := Trim(F[I]);
+        if (Line = '') or (Line[1] = ';') then Continue;
+        P1 := Pos('|', Line);
+        P2 := Length(Line);
+        while (P2 > P1) and (Line[P2] <> '|') do Dec(P2);
+        if (P1 = 0) or (P2 = P1) then Exit(Format('строка %d: нужно два "|"', [I + 1]));
+        Tok := UpperCase(Trim(Copy(Line, 1, P1 - 1)));
+        Plain := Trim(Copy(Line, P1 + 1, P2 - P1 - 1));
+        Cipher := Trim(Copy(Line, P2 + 1, MaxInt));
+        if Tok = 'N' then TextMode := tmNumbers
+        else if Tok = 'M' then TextMode := tmMixed
+        else TextMode := tmLetters;
+        if TextMode = tmNumbers then Live := 10 else Live := 30;
+        LoadMachine(MachinePath);
+        ReadCard(KeyPath);
+        if HeadSet = '' then Exit('в ключе нет "set ="');
+        LoadWheels(ExtractFilePath(MachinePath) + Format('wheels-%s.ini', [HeadSet]));
+        BuildKey('');
+        Inc(Count);
 
-      Mode := mCoding;
-      Setup;
-      Got := Process(Plain);
-      if Got <> Cipher then
-        Exit(Format('РАСХОЖДЕНИЕ %s: %s -> %s, ожидалось %s',
-                    [Tok, Plain, Got, Cipher]));
-      Mode := mDecoding;
-      Setup;
-      Got := Process(Cipher);
-      if Got <> Plain then
-        Exit(Format('РАСХОЖДЕНИЕ %s: %s -> %s, ожидалось %s',
-                    [Tok, Cipher, Got, Plain]));
+        Mode := mCoding;
+        Setup;
+        Got := Process(Plain);
+        if Got <> Cipher then
+          Exit(Format('РАСХОЖДЕНИЕ %s: %s -> %s, ожидалось %s',
+                      [Tok, Plain, Got, Cipher]));
+        Mode := mDecoding;
+        Setup;
+        Got := Process(Cipher);
+        if Got <> Plain then
+          Exit(Format('РАСХОЖДЕНИЕ %s: %s -> %s, ожидалось %s',
+                      [Tok, Cipher, Got, Plain]));
+      end;
+    finally
+      F.Free;
     end;
+    Result := Format('OK — векторов %d, оба направления', [Count]);
   finally
-    F.Free;
+    TextMode := tmLetters;
+    Live := 30;
+    LoadMachine(MachinePath);
   end;
-  TextMode := tmLetters;
-  Live := 30;
-  LoadMachine(MachinePath, Live);
-  Result := Format('OK — векторов %d, оба направления', [Count]);
 end;
 
 { 6. Сменная головка: те же диски и тот же шифр, другие знаки на контактах.
@@ -1402,7 +1545,8 @@ begin
     if Result = '' then Result := Format('OK — головка %s, оба ряда', [HeadId]);
   finally
     HeadPath := '';
-    LoadMachine(MachinePath, 30);
+    Live := 30;
+    LoadMachine(MachinePath);
   end;
 end;
 
@@ -1577,7 +1721,7 @@ begin
   { На шифртексте подготовка подменила бы Й и испортила его. }
   if Preparing and (Mode = mDecoding) then
     Die('--prepare применяется только к открытому тексту', []);
-  LoadMachine(MachinePath, Live);
+  LoadMachine(MachinePath);
 
   if SelfTest then
   begin
@@ -1601,7 +1745,9 @@ begin
     Halt(0);
   end;
 
-  if KeyPath = '' then Usage;
+  { не Usage: она уходит с кодом 0, и скрипт принял бы забытый ключ за успех }
+  if KeyPath = '' then
+    Die('нужен ключ дня: -k файл (или --genkey, --genpos, --selftest)', []);
 
   ReadCard(KeyPath);
   if WheelsPath = '' then
@@ -1637,12 +1783,16 @@ begin
   if InPath <> '' then Text := ReadAll(InPath)
   else
   begin
+    { ReadLn перевод строки съедает, а вернуть его надо: иначе про склейку
+      слов узнал бы только тот, кто подал файл, но не тот, кто подал поток }
     Text := '';
     while not Eof(Input) do
     begin
       ReadLn(Input, Line);
+      if Text <> '' then Text := Text + #10;
       Text := Text + Line;
     end;
+    if Copy(Text, 1, 3) = #$EF#$BB#$BF then Delete(Text, 1, 3);
   end;
   { Trim здесь недопустим: пробел — знак машины, а не отступ.
     Переводы строк Process пропускает сам. }
