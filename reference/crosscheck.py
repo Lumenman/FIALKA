@@ -236,6 +236,20 @@ def check_guards():
 
         # CP1251 на входе: раньше длина знака бралась по ведущему байту без
         # проверки продолжения, и «ПРИВЕТ» шифровался молча не тем
+        # «-» документирован как имя потока (docs/usage.md), но разбор
+        # аргументов видел в нём начало ключа и отвергал
+        code, out, err = run([exe], ['-e', '-k', key, '--mode', 'N', '-'],
+                             '24310')
+        if code or out != run([exe], ['-e', '-k', key, '--mode', 'N'],
+                              '24310')[1]:
+            print('РАСХОЖДЕНИЕ (минус как поток): код %d, сказано: %s'
+                  % (code, err or out))
+            bad += 1
+        bad += must_fail('два входных файла',
+                         ['-e', '-k', key, os.path.join(tmp, 'demo', 'de.txt'),
+                          os.path.join(tmp, 'demo', 'en.txt')],
+                         'должен быть один', exe)
+
         cp = os.path.join(tmp, 'cp1251.txt')
         with open(cp, 'wb') as f:
             f.write('ПРИВЕТ'.encode('cp1251'))

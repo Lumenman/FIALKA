@@ -1594,7 +1594,7 @@ procedure Usage;
 begin
   WriteLn('Фиалка М-125');
   WriteLn;
-  WriteLn('  fialka [-e|-d|-p] -k ключ.txt [ключи] [вход.txt]');
+  WriteLn('  fialka [-e|-d|-p] -k ключ.txt [ключи] [вход.txt|-]');
   WriteLn('  fialka --genkey | --genpos | --selftest');
   WriteLn;
   WriteLn('  -e, -d, -p      зашифрование (по умолчанию), расшифрование, сквозной прогон');
@@ -1650,8 +1650,9 @@ end;
 procedure ParseArgs;
 var
   I: Integer;
-  A, T: string;
+  A, T, In1: string;
 begin
+  In1 := '';
   I := 1;
   Argc := ParamCount;
   while I <= Argc do
@@ -1687,10 +1688,17 @@ begin
       HasSeed := True;
     end
     else if (A = '-h') or (A = '--help') then Usage
-    else if (Length(A) > 0) and (A[1] = '-') then Die('неизвестный ключ: %s', [A])
-    else InPath := A;
+    { одинокий минус — имя потока, а не начало ключа }
+    else if (Length(A) > 1) and (A[1] = '-') then
+      Die('неизвестный ключ: %s', [ArgToUtf8(A)])
+    else if In1 <> '' then
+      Die('входной файл должен быть один, а их два: %s и %s', [In1, A])
+    else In1 := A;
     Inc(I);
   end;
+  { пустой InPath и означает stdin, так что «-» просто нечего присваивать:
+    иначе он уехал бы в ReadAll и программа искала бы файл с таким именем }
+  if In1 <> '-' then InPath := In1;
 end;
 
 { Лог открывается Rewrite'ом, то есть обнуляет файл. Порядок в главной
