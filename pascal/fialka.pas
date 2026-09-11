@@ -127,21 +127,38 @@ begin
   end;
 end;
 
-{ Длина знака UTF-8 по ведущему байту. }
+{ Длина знака UTF-8 по ведущему байту; 0 — знак с такого байта начаться
+  не может: это либо продолжение чужого, либо заведомо длинная запись. }
 function CharLen(B: Byte): Integer;
 begin
   if B < $80 then Result := 1
+  else if (B = $C0) or (B = $C1) then Result := 0   { запись длиннее нужного }
   else if B shr 5 = %110 then Result := 2
   else if B shr 4 = %1110 then Result := 3
-  else Result := 4;
+  else if B shr 3 = %11110 then Result := 4
+  else Result := 0;
 end;
 
-{ Очередной знак строки; I двигается на следующий. }
+{ Очередной знак строки; I двигается на следующий.
+
+  Длину объявляет ведущий байт, но верить ему на слово нельзя: «D0 10» без
+  проверки продолжения сложилось бы в готовую букву А, а файл в CP1251
+  зашифровался бы молча и знак в знак не тем. Проверка стоит здесь, а не у
+  каждого читающего: через NextChar проходит весь текст — и входной, и
+  таблица подготовки, и аргументы. }
 function NextChar(const S: string; var I: Integer): string;
 var
-  L: Integer;
+  L, K: Integer;
 begin
   L := CharLen(Byte(S[I]));
+  if L = 0 then
+    Die('не UTF-8: байт %d ($%s) не начинает знак', [I, IntToHex(Byte(S[I]), 2)]);
+  if I + L - 1 > Length(S) then
+    Die('не UTF-8: знак с байта %d обрывается на конце текста', [I]);
+  for K := I + 1 to I + L - 1 do
+    if Byte(S[K]) shr 6 <> %10 then
+      Die('не UTF-8: байт %d ($%s) не продолжает знак — текст в другой кодировке?',
+          [K, IntToHex(Byte(S[K]), 2)]);
   Result := Copy(S, I, L);
   Inc(I, L);
 end;

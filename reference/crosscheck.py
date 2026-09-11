@@ -114,33 +114,55 @@ def check_prepare():
             print('РАСХОЖДЕНИЕ (%s)\n  паскаль: %s | %s\n  оракул:  %s | %s'
                   % (name, po, pe, yo, ye))
             bad += 1
-    return bad + check_abbreviate(key)
+    return bad + check_abbreviate()
 
 
-def check_abbreviate(key):
+def sandbox():
+    """Копия дерева для проверок, которые портят данные нарочно.
+
+    -> (корень, команда паскаля, команда эталона). И паскаль, и эталон
+    находят data/ сами, по своему расположению, поэтому переезжают оба:
+    подменить путь снаружи нечем. Правка рабочих файлов с возвратом назад
+    тем и плоха, что прерванная проверка оставит их подменёнными, а
+    запущенная рядом программа успеет их прочитать.
+    """
+    tmp = tempfile.mkdtemp(prefix='fialka-')
+    for d in ('data', 'keys', 'demo', 'reference'):
+        shutil.copytree(os.path.join(fialka.ROOT, d), os.path.join(tmp, d),
+                        ignore=shutil.ignore_patterns('__pycache__'))
+    exe = os.path.join(tmp, 'pascal', 'fialka.exe')
+    os.makedirs(os.path.dirname(exe))
+    shutil.copy(EXE, exe)
+    return (tmp, [exe], [sys.executable, os.path.join(tmp, 'reference', 'fialka.py')])
+
+
+def check_abbreviate():
     """Сокращения: в поставке таблица пуста, поэтому проверка её подставляет.
 
-    Путь к prepare.ini обе реализации знают сами, ключа для него нет, так что
-    файл подменяется на время проверки и возвращается назад. Случай с ЧАС и
-    ЧАСОВ здесь главный: берётся самое длинное, иначе порядок строк в файле
-    решал бы, во что превратится текст.
+    Путь к prepare.ini обе реализации знают сами, ключа для него нет, так
+    что таблица подставляется в песочнице. Случай с ЧАС и ЧАСОВ здесь
+    главный: берётся самое длинное, иначе порядок строк в файле решал бы,
+    во что превратится текст.
     """
-    saved = open(fialka.PREPARE, encoding='utf-8').read()
-    if '[abbreviate]\n' not in saved:
-        print('РАСХОЖДЕНИЕ (сокращения): в prepare.ini нет секции [abbreviate]')
-        return 1
-    filled = saved.replace('[abbreviate]\n', '[abbreviate]\nМИНУТ = МИН\n'
-                           'ЧАСОВ = ЧАС\nЧАС = Ч\nКООРДИНАТЫ = КООРД\n')
-    args = ['-e', '--key', key, '--prepare']
-    text = 'ЖДАТЬ ЧАСОВ ПЯТЬ, КООРДИНАТЫ ЧЕРЕЗ ДЕСЯТЬ МИНУТ.'
+    tmp, pascal, python = sandbox()
     try:
-        with open(fialka.PREPARE, 'w', encoding='utf-8') as f:
-            f.write(filled)
-        pc, po, pe = run(PASCAL, args, text)
-        yc, yo, ye = run(PYTHON, args, text)
+        prepare = os.path.join(tmp, 'data', 'prepare.ini')
+        saved = open(prepare, encoding='utf-8').read()
+        if '[abbreviate]' + NL not in saved:
+            print('РАСХОЖДЕНИЕ (сокращения): в prepare.ini нет секции [abbreviate]')
+            return 1
+        with open(prepare, 'w', encoding='utf-8') as f:
+            f.write(saved.replace('[abbreviate]' + NL,
+                                  '[abbreviate]' + NL + 'МИНУТ = МИН' + NL +
+                                  'ЧАСОВ = ЧАС' + NL + 'ЧАС = Ч' + NL +
+                                  'КООРДИНАТЫ = КООРД' + NL))
+        args = ['-e', '--key', os.path.join(tmp, 'keys', 'kt16_08_26.txt'),
+                '--prepare']
+        text = 'ЖДАТЬ ЧАСОВ ПЯТЬ, КООРДИНАТЫ ЧЕРЕЗ ДЕСЯТЬ МИНУТ.'
+        pc, po, pe = run(pascal, args, text)
+        yc, yo, ye = run(python, args, text)
     finally:
-        with open(fialka.PREPARE, 'w', encoding='utf-8') as f:
-            f.write(saved)
+        shutil.rmtree(tmp, ignore_errors=True)
     if pc or yc:
         print('РАСХОЖДЕНИЕ (сокращения): паскаль код %d, оракул код %d' % (pc, yc))
         return 1
@@ -172,14 +194,9 @@ def check_guards():
         return 0
 
     bad = 0
-    tmp = tempfile.mkdtemp(prefix='fialka-guards-')
+    tmp, pascal, _ = sandbox()
+    exe = pascal[0]
     try:
-        for d in ('data', 'keys', 'demo'):
-            shutil.copytree(os.path.join(fialka.ROOT, d), os.path.join(tmp, d))
-        # exe ищет данные рядом с собой (../data), поэтому переезжает тоже
-        exe = os.path.join(tmp, 'pascal', 'fialka.exe')
-        os.makedirs(os.path.dirname(exe))
-        shutil.copy(EXE, exe)
         key = os.path.join(tmp, 'keys', 'kt16_08_26.txt')
         mach = os.path.join(tmp, 'data', 'machine-M125-3.ini')
         saved = open(mach, encoding='utf-8').read()
@@ -216,6 +233,17 @@ def check_guards():
         with open(vec, 'w', encoding='utf-8', newline='') as f:
             f.write('\n'.join(lines))
         bad += must_fail('битый вектор', ['--selftest'], 'нужно два', exe)
+
+        # CP1251 на входе: раньше длина знака бралась по ведущему байту без
+        # проверки продолжения, и «ПРИВЕТ» шифровался молча не тем
+        cp = os.path.join(tmp, 'cp1251.txt')
+        with open(cp, 'wb') as f:
+            f.write('ПРИВЕТ'.encode('cp1251'))
+        code, out, err = run([exe], ['-e', '-k', key, cp], '')
+        if code == 0 or 'не UTF-8' not in (err or out):
+            print('РАСХОЖДЕНИЕ (чужая кодировка): код %d, сказано: %s'
+                  % (code, err or out))
+            bad += 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return bad
@@ -233,8 +261,11 @@ def main():
             wheel_set = KEYS[i % len(KEYS)]
             mode = 'decoding' if i % 2 else 'coding'
             # режим цифр гоняет возвратный контур: при 30 живых контактах у
-            # рефлектора нет мёртвых и он вообще не срабатывает
-            text_mode = TEXT_MODES[i % len(TEXT_MODES)]
+            # рефлектора нет мёртвых и он вообще не срабатывает.
+            # Делитель другой, чем у комплекта: на одном и том же i % 3
+            # проверялись бы только 3K/L, 5K/M и 6K/N, сколько прогонов ни
+            # задай, а остальные шесть пар не встретились бы никогда
+            text_mode = TEXT_MODES[(i // len(KEYS)) % len(TEXT_MODES)]
             head = LATIN if (i % 5 == 3 and text_mode != 'N') else None
             head_args = ['-H', head] if head else []
             tables = fialka.Tables(fialka.MACHINE,
