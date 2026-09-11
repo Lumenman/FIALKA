@@ -10,8 +10,10 @@
 """
 import os
 import random
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import fialka
 
@@ -152,6 +154,73 @@ def check_abbreviate(key):
     return 0
 
 
+def check_guards():
+    """Отказы на битых данных: основной цикл гоняет только исправные.
+
+    Каждый случай стережёт ошибку, которая проходила молча: лог затирал
+    входной текст, рефлектор с необратимыми таблицами шифровал в одну
+    сторону, а непонятая строка вектора печатала жалобу и возвращала ноль.
+    Работа идёт на копии дерева — данные портятся нарочно, и рабочие
+    файлы проекта об этом знать не должны.
+    """
+    def must_fail(name, args, expect, exe):
+        code, out, err = run([exe], args, '')
+        said = err or out
+        if code == 0 or expect not in said:
+            print('РАСХОЖДЕНИЕ (%s): код %d, сказано: %s' % (name, code, said))
+            return 1
+        return 0
+
+    bad = 0
+    tmp = tempfile.mkdtemp(prefix='fialka-guards-')
+    try:
+        for d in ('data', 'keys', 'demo'):
+            shutil.copytree(os.path.join(fialka.ROOT, d), os.path.join(tmp, d))
+        # exe ищет данные рядом с собой (../data), поэтому переезжает тоже
+        exe = os.path.join(tmp, 'pascal', 'fialka.exe')
+        os.makedirs(os.path.dirname(exe))
+        shutil.copy(EXE, exe)
+        key = os.path.join(tmp, 'keys', 'kt16_08_26.txt')
+        mach = os.path.join(tmp, 'data', 'machine-M125-3.ini')
+        saved = open(mach, encoding='utf-8').read()
+
+        text = 'ПРИВЕТ МИР'
+        msg = os.path.join(tmp, 'msg.txt')
+        with open(msg, 'w', encoding='utf-8') as f:
+            f.write(text)
+        bad += must_fail('лог на вход', ['-e', '-k', key, '--log', msg, msg],
+                         'затёр бы', exe)
+        if open(msg, encoding='utf-8').read() != text:
+            print('РАСХОЖДЕНИЕ (лог на вход): исходный текст не уцелел')
+            bad += 1
+
+        # перестановка остаётся перестановкой, но обратной к coding быть
+        # перестаёт: одной проверки на диапазон тут мало
+        top = saved.split('[reflector.30]')[1]
+        old = [l for l in top.splitlines() if l.startswith('decoding')][0]
+        nums = old.split('=')[1].split()
+        nums[0], nums[1] = nums[1], nums[0]
+        with open(mach, 'w', encoding='utf-8') as f:
+            f.write(saved.replace(old, 'decoding = ' + ' '.join(nums), 1))
+        bad += must_fail('рефлектор не обратен', ['-e', '-k', key, msg],
+                         'не обращает', exe)
+        with open(mach, 'w', encoding='utf-8') as f:
+            f.write(saved)
+
+        vec = os.path.join(tmp, 'demo', 'vectors.txt')
+        lines = open(vec, encoding='utf-8').read().splitlines()
+        for i, l in enumerate(lines):
+            if l.strip() and not l.startswith(';') and '|' in l:
+                lines[i] = l.replace('|', '', 1)
+                break
+        with open(vec, 'w', encoding='utf-8', newline='') as f:
+            f.write('\n'.join(lines))
+        bad += must_fail('битый вектор', ['--selftest'], 'нужно два', exe)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return bad
+
+
 def main():
     rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 50
     if not os.path.exists(EXE):
@@ -206,7 +275,9 @@ def main():
         if os.path.exists(tmp):
             os.remove(tmp)
     bad += check_prepare()
-    print('сверено %d прогонов плюс подготовка текста, расхождений: %d' % (rounds, bad))
+    bad += check_guards()
+    print('сверено %d прогонов плюс подготовка текста и отказы, расхождений: %d'
+          % (rounds, bad))
     return 1 if bad else 0
 
 

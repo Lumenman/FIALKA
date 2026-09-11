@@ -480,6 +480,24 @@ begin
     Die('в верхнем ряду головки %d цифр, а нужно десять', [Digits]);
 end;
 
+{ Проводка рефлектора задана дважды, прямо и обратно. Если таблицы не
+  обращают друг друга, ошибку не заметит никто: зашифрование и расшифрование
+  отработают без жалоб, а текст после полного цикла вернётся другим. }
+procedure ParseRefl(Ini: TIniFile; const Sect, Fwd, Bwd: string;
+                    out WF, WB: TWire);
+var
+  Inv: TWire;
+  I: Integer;
+begin
+  ParseWire(IniStr(Ini, Sect, Fwd), WF, Sect + '.' + Fwd);
+  ParseWire(IniStr(Ini, Sect, Bwd), WB, Sect + '.' + Bwd);
+  Invert(WF, Inv, Sect + '.' + Fwd);
+  for I := 1 to N do
+    if Inv[I] <> WB[I] then
+      Die('%s: %s не обращает %s — на контакте %d стоит %d, а нужно %d',
+          [Sect, Bwd, Fwd, I, WB[I], Inv[I]]);
+end;
+
 { Live — глобал: он же решает, какая головка законна, и какой клавиатурой
   считать шифр. Параметром он раньше затенял глобал, и инвариант «загружено
   то, что в Live» держался только дисциплиной вызывающего. }
@@ -524,10 +542,8 @@ begin
 
     Sect := Format('reflector.%d', [Live]);
     if not Ini.SectionExists(Sect) then Die('в машине нет секции [%s]', [Sect]);
-    ParseWire(IniStr(Ini, Sect, 'coding'), Coding, Sect + '.coding');
-    ParseWire(IniStr(Ini, Sect, 'decoding'), Decoding, Sect + '.decoding');
-    ParseWire(IniStr(Ini, Sect, 'alt_coding'), AltCoding, Sect + '.alt_coding');
-    ParseWire(IniStr(Ini, Sect, 'alt_decoding'), AltDecoding, Sect + '.alt_decoding');
+    ParseRefl(Ini, Sect, 'coding', 'decoding', Coding, Decoding);
+    ParseRefl(Ini, Sect, 'alt_coding', 'alt_decoding', AltCoding, AltDecoding);
   finally
     Ini.Free;
   end;
@@ -1660,6 +1676,18 @@ begin
   end;
 end;
 
+{ Лог открывается Rewrite'ом, то есть обнуляет файл. Порядок в главной
+  программе уже не даст прочитать пустоту, но файл-то пропадёт, поэтому
+  совпадение имён ловим до всякой работы. Защита не абсолютная — жёсткая
+  ссылка или подстановка через другой путь ей не видны, — зато опечатку
+  «--log message.txt message.txt» ловит, а она и случается. }
+procedure CheckLogPath(const Other, Name: string);
+begin
+  if (Other <> '')
+     and SameFileName(ExpandFileName(LogPath), ExpandFileName(Other)) then
+    Die('лог затёр бы %s: %s', [Name, Other]);
+end;
+
 procedure RunSelfTest;
 var
   Bad, Vec, Head: string;
@@ -1689,7 +1717,7 @@ begin
   WriteLn('сменная головка: ', Head);
 
   if (Bad <> '') or ((Err <> '') and (Pos('пропущена', Err) = 0))
-     or (Pos('РАСХОЖДЕНИЕ', Vec) > 0)
+     or ((Pos('OK', Vec) = 0) and (Pos('пропущена', Vec) = 0))
      or ((Pos('OK', Head) = 0) and (Pos('пропущена', Head) = 0)) then Halt(1);
 end;
 
@@ -1729,6 +1757,16 @@ begin
     Halt(0);
   end;
 
+  if LogPath <> '' then
+  begin
+    CheckLogPath(InPath, 'входной текст');
+    CheckLogPath(OutPath, 'вывод');
+    CheckLogPath(KeyPath, 'ключ дня');
+    CheckLogPath(MachinePath, 'настройки машины');
+    CheckLogPath(WheelsPath, 'комплект дисков');
+    CheckLogPath(HeadPath, 'печатающую головку');
+  end;
+
   if GenKey or GenPos then
   begin
     { ponytail: Random в FPC — не криптографический ГПСЧ. Для реконструкции
@@ -1764,22 +1802,6 @@ begin
   BuildKey(PosArg);
   Setup;
 
-  if LogPath <> '' then
-  begin
-    AssignFile(LogF, LogPath);
-    Rewrite(LogF);
-    SetTextCodePage(LogF, DefaultSystemCodePage);
-    Logging := True;
-    case Mode of
-      mCoding: Res := 'зашифрование';
-      mDecoding: Res := 'расшифрование';
-      else Res := 'сквозной прогон';
-    end;
-    WriteLn(LogF, Format('ключ %s, комплект %s, %s, живых контактов %d',
-                         [KeyPath, WheelSet, Res, Live]));
-    WriteLn(LogF, Format('старт %s', [PosLine]));
-  end;
-
   if InPath <> '' then Text := ReadAll(InPath)
   else
   begin
@@ -1802,6 +1824,25 @@ begin
     LoadPrepare(Near('data' + DirectorySeparator + 'prepare.ini'));
     Text := PrepareText(Text);
   end;
+  { Лог открывается последним: Rewrite обнуляет файл, а --log message.txt на
+    ещё не прочитанный вход стоил бы исходного текста. Вывод (-o) по той же
+    причине открывается только в Emit. }
+  if LogPath <> '' then
+  begin
+    AssignFile(LogF, LogPath);
+    Rewrite(LogF);
+    SetTextCodePage(LogF, DefaultSystemCodePage);
+    Logging := True;
+    case Mode of
+      mCoding: Res := 'зашифрование';
+      mDecoding: Res := 'расшифрование';
+      else Res := 'сквозной прогон';
+    end;
+    WriteLn(LogF, Format('ключ %s, комплект %s, %s, живых контактов %d',
+                         [KeyPath, WheelSet, Res, Live]));
+    WriteLn(LogF, Format('старт %s', [PosLine]));
+  end;
+
   Res := Process(Text);
 
   if Logging then CloseFile(LogF);
