@@ -1,6 +1,6 @@
 program fialka;
 {
-  Шифровальная машина Фиалка М-125.
+  Шифровальная машина Фиалка М-125-3.
 
   Механизм восстановлен из M125v5_16eng.exe и сверен с Fialka_200.pdf
   (Reuvers & Simons). Формулы повторяют эталонную модель reference/fialka.py
@@ -1600,7 +1600,7 @@ end;
 
 procedure Usage;
 begin
-  WriteLn('Фиалка М-125');
+  WriteLn('Фиалка М-125-3');
   WriteLn;
   WriteLn('  fialka [-e|-d|-p] -k ключ.txt [ключи] [вход.txt|-]');
   WriteLn('  fialka --genkey | --genpos | --selftest');

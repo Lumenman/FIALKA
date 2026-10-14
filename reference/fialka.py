@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Эталонная модель шифровальной машины Фиалка М-125.
+"""Эталонная модель шифровальной машины Фиалка М-125-3.
 
 Реализует механизм, восстановленный из M125v5_16eng.exe и сверенный
 с Fialka_200.pdf (Reuvers & Simons). Назначение — оракул: медленно, зато
@@ -890,7 +890,7 @@ def verify_vectors(path=VECTORS):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Эталонная модель Фиалки М-125')
+    ap = argparse.ArgumentParser(description='Эталонная модель Фиалки М-125-3')
     ap.add_argument('--machine', default=MACHINE)
     ap.add_argument('--wheels', help='перебить комплект, заданный в ключе')
     ap.add_argument('--head', help='перебить головку, заданную строкой script')
