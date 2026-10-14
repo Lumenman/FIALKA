@@ -101,19 +101,40 @@ def check_prepare():
         ('разрыв в конце ничего не склеил', [], 'ПРИВЕТ' + NL),
         ('разрыв перед отказом', [], 'ЙОД' + NL + 'МИР'),
         ('BOM в потоке', [], BOM + 'ПРИВЕТ'),
+        # str.upper() разводит ß в SS и делает из ı и ſ латинские I и S:
+        # эталон шифровал их на латинской головке, Паскаль отвергал
+        ('ß на латинице', ['--head', LATIN], 'straße'),
+        ('ı на латинице', ['--head', LATIN], 'ıtalıa'),
+        ('ſ на латинице', ['--head', LATIN], 'ſtop'),
+        ('строчные на латинице', ['--head', LATIN, '--mode', 'M'], 'gęba łąka žar'),
     ]
+    # ключ демо записан кириллицей, и латинская головка отвергла бы уже его,
+    # а не текст: для неё ключ делается её же буквами
+    latin = fialka.Tables(fialka.MACHINE,
+                          os.path.join(fialka.ROOT, 'data', 'wheels-6K.ini'), LATIN)
+    fd, latkey = tempfile.mkstemp(suffix='.key')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(fialka.gen_card(latin, '6K') + NL)
     bad = 0
-    for name, extra, text in cases:
-        args = ['-e', '--key', key] + extra if '-d' not in extra else ['--key', key] + extra
-        pc, po, pe = run(PASCAL, args, text)
-        yc, yo, ye = run(PYTHON, args, text)
-        if (pc == 0) != (yc == 0):
-            print('РАСХОЖДЕНИЕ (%s): паскаль код %d, оракул код %d' % (name, pc, yc))
-            bad += 1
-        elif pc == 0 and (po, pe) != (yo, ye):
-            print('РАСХОЖДЕНИЕ (%s)\n  паскаль: %s | %s\n  оракул:  %s | %s'
-                  % (name, po, pe, yo, ye))
-            bad += 1
+    try:
+        for name, extra, text in cases:
+            k = latkey if '--head' in extra else key
+            args = ['-e', '--key', k] + extra if '-d' not in extra else ['--key', k] + extra
+            pc, po, pe = run(PASCAL, args, text)
+            yc, yo, ye = run(PYTHON, args, text)
+            if (pc == 0) != (yc == 0):
+                print('РАСХОЖДЕНИЕ (%s): паскаль код %d, оракул код %d' % (name, pc, yc))
+                bad += 1
+            elif pc == 0 and (po, pe) != (yo, ye):
+                print('РАСХОЖДЕНИЕ (%s)\n  паскаль: %s | %s\n  оракул:  %s | %s'
+                      % (name, po, pe, yo, ye))
+                bad += 1
+            # отказ на ключе, а не на тексте, не проверял бы ничего
+            elif pc and 'не буква алфавита' in pe:
+                print('РАСХОЖДЕНИЕ (%s): отказ на ключе: %s' % (name, pe))
+                bad += 1
+    finally:
+        os.remove(latkey)
     return bad + check_abbreviate()
 
 
@@ -179,22 +200,23 @@ def check_abbreviate():
 def check_guards():
     """Отказы на битых данных: основной цикл гоняет только исправные.
 
-    Каждый случай стережёт ошибку, которая проходила молча: лог затирал
-    входной текст, рефлектор с необратимыми таблицами шифровал в одну
-    сторону, а непонятая строка вектора печатала жалобу и возвращала ноль.
+    Каждый случай стережёт ошибку, которая проходила молча: лог и -o
+    затирали входной текст, рефлектор с необратимыми таблицами и карта с
+    нулём шифровали в одну сторону, а непонятая строка вектора печатала
+    жалобу и возвращала ноль. Трасса вместо отказа — тоже расхождение.
     Работа идёт на копии дерева — данные портятся нарочно, и рабочие
     файлы проекта об этом знать не должны.
     """
-    def must_fail(name, args, expect, exe):
-        code, out, err = run([exe], args, '')
+    def must_fail(name, args, expect, cmd):
+        code, out, err = run(cmd, args, '')
         said = err or out
-        if code == 0 or expect not in said:
+        if code == 0 or expect not in said or 'Traceback' in said:
             print('РАСХОЖДЕНИЕ (%s): код %d, сказано: %s' % (name, code, said))
             return 1
         return 0
 
     bad = 0
-    tmp, pascal, _ = sandbox()
+    tmp, pascal, python = sandbox()
     exe = pascal[0]
     try:
         key = os.path.join(tmp, 'keys', 'kt16_08_26.txt')
@@ -205,11 +227,28 @@ def check_guards():
         msg = os.path.join(tmp, 'msg.txt')
         with open(msg, 'w', encoding='utf-8') as f:
             f.write(text)
-        bad += must_fail('лог на вход', ['-e', '-k', key, '--log', msg, msg],
-                         'затёр бы', exe)
-        if open(msg, encoding='utf-8').read() != text:
-            print('РАСХОЖДЕНИЕ (лог на вход): исходный текст не уцелел')
-            bad += 1
+        for flag in ('--log', '-o'):
+            bad += must_fail(flag + ' на вход', ['-e', '-k', key, flag, msg, msg],
+                             'затёр бы', pascal)
+            if open(msg, encoding='utf-8').read() != text:
+                print('РАСХОЖДЕНИЕ (%s на вход): исходный текст не уцелел' % flag)
+                bad += 1
+        bad += must_fail('нечисловое зерно', ['--genpos', '--seed', 'abc'],
+                         '--seed', pascal)
+        for cmd in (pascal, python):
+            bad += must_fail('зерно без генерации', ['-e', '--key', key, '--seed', '1'],
+                             '--seed', cmd)
+
+        # ноль в карте: Паскаль падал по диапазону, эталон молча давал
+        # необратимый шифр. Дублей нет, так что invert его не видел
+        holed = os.path.join(tmp, 'keys', 'holed.txt')
+        card = 'card = ' + ' '.join(['0'] + [str(i) for i in range(2, 31)])
+        with open(holed, 'w', encoding='utf-8') as f:
+            f.write(open(key, encoding='utf-8').read()
+                    .replace('card = identity', card, 1))
+        for cmd in (pascal, python):
+            bad += must_fail('ноль в карте', ['-e', '--key', holed],
+                             'никуда не ведёт', cmd)
 
         # перестановка остаётся перестановкой, но обратной к coding быть
         # перестаёт: одной проверки на диапазон тут мало
@@ -220,7 +259,16 @@ def check_guards():
         with open(mach, 'w', encoding='utf-8') as f:
             f.write(saved.replace(old, 'decoding = ' + ' '.join(nums), 1))
         bad += must_fail('рефлектор не обратен', ['-e', '-k', key, msg],
-                         'не обращает', exe)
+                         'не обращает', pascal)
+        with open(mach, 'w', encoding='utf-8') as f:
+            f.write(saved)
+
+        # битый INI: эталон ловил только ValueError и сыпал трассой
+        with open(mach, 'w', encoding='utf-8') as f:
+            f.write(saved.replace('[machine]', '', 1))
+        for cmd in (pascal, python):
+            bad += must_fail('нет секции machine', ['-e', '--key', key],
+                             'ошибка', cmd)
         with open(mach, 'w', encoding='utf-8') as f:
             f.write(saved)
 
@@ -232,7 +280,8 @@ def check_guards():
                 break
         with open(vec, 'w', encoding='utf-8', newline='') as f:
             f.write('\n'.join(lines))
-        bad += must_fail('битый вектор', ['--selftest'], 'нужно два', exe)
+        for cmd in (pascal, python):
+            bad += must_fail('битый вектор', ['--selftest'], 'нужно два', cmd)
 
         # CP1251 на входе: раньше длина знака бралась по ведущему байту без
         # проверки продолжения, и «ПРИВЕТ» шифровался молча не тем
@@ -248,7 +297,7 @@ def check_guards():
         bad += must_fail('два входных файла',
                          ['-e', '-k', key, os.path.join(tmp, 'demo', 'de.txt'),
                           os.path.join(tmp, 'demo', 'en.txt')],
-                         'должен быть один', exe)
+                         'должен быть один', pascal)
 
         cp = os.path.join(tmp, 'cp1251.txt')
         with open(cp, 'wb') as f:

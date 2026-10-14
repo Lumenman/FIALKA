@@ -54,6 +54,21 @@ def unescape(token):
     return ESCAPES.get(token, token)
 
 
+def upfold(text):
+    """Прописные: регистра на машине нет, «п» и «П» — одна клавиша.
+
+    Не голый str.upper(): он разводит ß в SS и шифрует то, чего на машине
+    нет, а ı и ſ молча делает латинскими I и S. Складывается только знак с
+    парой в обе стороны — строчный и прописной друг друга и дают. Паскаль
+    делает то же своей таблицей, и сверка проверяет, что таблица не отстала.
+    """
+    out = []
+    for ch in text:
+        up = ch.upper()
+        out.append(up if len(up) == 1 and up.lower() == ch else ch)
+    return ''.join(out)
+
+
 def _row(text, name):
     """Строка INI -> 1-базовый список. Пустая строка -> все нули.
 
@@ -360,6 +375,11 @@ class Key:
             self.card = list(tables.card_builtin)
         else:
             self.card = _row(card, 'перфокарта')
+            # карта — перестановка: ноль увёл бы знак в entry[0] и дал
+            # необратимый шифр без единого сигнала. Дубли ловит invert
+            if 0 in self.card[1:]:
+                raise ValueError('перфокарта: контакт %d никуда не ведёт'
+                                 % self.card.index(0, 1))
 
     @staticmethod
     def _ten(tokens, tables):
@@ -438,12 +458,12 @@ def prepare(text, tables, path=PREPARE, report=None, text_mode='L'):
     if not cfg.read(path, encoding='utf-8'):
         raise ValueError('нет таблицы подготовки: %s' % path)
     # escape раскрывается до приведения регистра: иначе '\\s' стало бы '\\S'
-    table = {unescape(k).upper(): unescape(v).upper()
+    table = {upfold(unescape(k)): upfold(unescape(v))
              for k, v in cfg['replace'].items()}
-    short = ({unescape(k).upper(): unescape(v).upper()
+    short = ({upfold(unescape(k)): upfold(unescape(v))
               for k, v in cfg['abbreviate'].items()}
              if cfg.has_section('abbreviate') else {})
-    text = _abbreviate(text.upper(), short, report)
+    text = _abbreviate(upfold(text), short, report)
     out, num = [], 0
     for ch in text:
         if ch not in '\r\n':
@@ -847,11 +867,14 @@ def verify_vectors(path=VECTORS):
     if not os.path.exists(key_path):
         return 'пропущена (нет ключа)'
     bad, count = [], 0
-    for line in open(path, encoding='utf-8'):
+    for num, line in enumerate(open(path, encoding='utf-8'), 1):
         line = line.strip()
         if not line or line.startswith(';'):
             continue
-        text_mode, plain, cipher = (part.strip() for part in line.split('|'))
+        parts = [part.strip() for part in line.split('|')]
+        if len(parts) != 3:
+            return 'РАСХОЖДЕНИЕ\n  строка %d: нужно два "|"' % num
+        text_mode, plain, cipher = parts
         count += 1
         tables, key = load(MACHINE, key_path, text_mode=text_mode)
         got = Machine(tables, key).process(plain)
@@ -895,6 +918,8 @@ def main():
     args = ap.parse_args()
 
     if args.seed is not None:
+        if not (args.genkey or args.genpos):
+            ap.error('--seed действует только с --genkey или --genpos')
         random.seed(args.seed)
 
     if args.genkey or args.genpos:
@@ -939,7 +964,7 @@ def main():
     text = (open(args.src, encoding='utf-8-sig').read() if args.src
             else sys.stdin.read().removeprefix('﻿'))     # BOM и в потоке
     # без .strip(): пробел — знак машины, переводы строк process пропускает сам
-    text = text.upper()          # регистра на машине нет: «п» и «П» — одна клавиша
+    text = upfold(text)          # регистра на машине нет: «п» и «П» — одна клавиша
     if args.prepare:
         text = prepare(text, tables, report=lambda s: print(s, file=sys.stderr),
                        text_mode=args.text_mode)
@@ -950,5 +975,7 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (ValueError, OSError) as err:     # кривой ключ — не повод для трассы
-        sys.exit('ошибка: %s' % err)
+    except (ValueError, OSError, configparser.Error) as err:
+        sys.exit('ошибка: %s' % err)          # кривой ключ — не повод для трассы
+    except KeyError as err:                   # нет секции INI
+        sys.exit('ошибка: в INI нет секции или параметра %s' % err)

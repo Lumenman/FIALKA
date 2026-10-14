@@ -235,8 +235,11 @@ end;
   головки: латиница-1 (ä ö ü ó), расширенная A (ą ć ę ł ń ś ź ż ě š č ř ž ů) и
   кириллица. Эталон складывает регистр через str.upper(), и без этих двух
   латинских блоков реализации разъезжались: польское «ą» Питон шифровал, а
-  Паскаль отвергал. Обе двухбайтные лакуны .upper() (ß -> SS, ÿ -> Ÿ, ı -> I)
-  сюда не лезут — ни на одной головке их нет, и знак остался бы двухбайтным. }
+  Паскаль отвергал. Знаки без пары в обе стороны (ß -> SS, ı -> I, ſ -> S)
+  не складываются ни здесь, ни в эталоне: иначе ß ушёл бы на латинскую
+  головку двумя знаками, а ı — чужой I. Единственная разница — ÿ: эталон
+  складывает её в Ÿ, здесь она остаётся, но Ÿ нет ни на одной головке, и
+  исход один — отказ. }
 function FoldCP(CP: Integer): Integer;
 begin
   Result := CP;
@@ -889,7 +892,12 @@ begin
   else if HeadCard = 'builtin' then
     Card := CardBuiltin
   else
+  begin
     ParseWire(HeadCard, Card, 'перфокарта');
+    { карта — перестановка: ноль увёл бы знак в Entry[0]. Дубли ловит Invert }
+    for I := 1 to N do
+      if Card[I] = 0 then Die('перфокарта: контакт %d никуда не ведёт', [I]);
+  end;
   Invert(Card, CardInv, 'перфокарта');
 end;
 
@@ -1684,7 +1692,8 @@ begin
     else if A = '--set' then SetArg := NextArg(I)
     else if A = '--seed' then
     begin
-      Seed := StrToInt(NextArg(I));
+      if not TryStrToInt(NextArg(I), Seed) then
+        Die('--seed: ожидалось целое число, получено %s', [ParamStr(I)]);
       HasSeed := True;
     end
     else if (A = '-h') or (A = '--help') then Usage
@@ -1701,16 +1710,27 @@ begin
   if In1 <> '-' then InPath := In1;
 end;
 
-{ Лог открывается Rewrite'ом, то есть обнуляет файл. Порядок в главной
-  программе уже не даст прочитать пустоту, но файл-то пропадёт, поэтому
-  совпадение имён ловим до всякой работы. Защита не абсолютная — жёсткая
-  ссылка или подстановка через другой путь ей не видны, — зато опечатку
-  «--log message.txt message.txt» ловит, а она и случается. }
-procedure CheckLogPath(const Other, Name: string);
+{ Лог и вывод открываются Rewrite'ом, то есть обнуляют файл. Порядок в
+  главной программе уже не даст прочитать пустоту, но файл-то пропадёт,
+  поэтому совпадение имён ловим до всякой работы. Защита не абсолютная —
+  жёсткая ссылка или подстановка через другой путь ей не видны, — зато
+  опечатку «-o message.txt message.txt» ловит, а она и случается. }
+procedure CheckClash(const Target, What, Other, Name: string);
 begin
-  if (Other <> '')
-     and SameFileName(ExpandFileName(LogPath), ExpandFileName(Other)) then
-    Die('лог затёр бы %s: %s', [Name, Other]);
+  if (Target <> '') and (Other <> '')
+     and SameFileName(ExpandFileName(Target), ExpandFileName(Other)) then
+    Die('%s затёр бы %s: %s', [What, Name, Other]);
+end;
+
+procedure CheckWrite(const Target, What: string);
+begin
+  CheckClash(Target, What, InPath, 'входной текст');
+  CheckClash(Target, What, KeyPath, 'ключ дня');
+  CheckClash(Target, What, MachinePath, 'настройки машины');
+  CheckClash(Target, What, WheelsPath, 'комплект дисков');
+  CheckClash(Target, What, HeadPath, 'печатающую головку');
+  CheckClash(Target, What, Near('data' + DirectorySeparator + 'prepare.ini'),
+             'таблицу подготовки');
 end;
 
 procedure RunSelfTest;
@@ -1782,15 +1802,13 @@ begin
     Halt(0);
   end;
 
-  if LogPath <> '' then
-  begin
-    CheckLogPath(InPath, 'входной текст');
-    CheckLogPath(OutPath, 'вывод');
-    CheckLogPath(KeyPath, 'ключ дня');
-    CheckLogPath(MachinePath, 'настройки машины');
-    CheckLogPath(WheelsPath, 'комплект дисков');
-    CheckLogPath(HeadPath, 'печатающую головку');
-  end;
+  CheckWrite(LogPath, 'лог');
+  CheckWrite(OutPath, 'вывод');
+  CheckClash(LogPath, 'лог', OutPath, 'вывод');
+  { зерно вне генератора не значит ничего, а молча проглоченное выглядело
+    бы так, будто шифр от него зависит }
+  if HasSeed and not (GenKey or GenPos) then
+    Die('--seed действует только с --genkey или --genpos', []);
 
   if GenKey or GenPos then
   begin
